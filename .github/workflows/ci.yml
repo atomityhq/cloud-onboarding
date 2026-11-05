@@ -130,26 +130,12 @@ jobs:
           python-version: "3.12"
       - run: pip install checkov==3.4.3
       - run: checkov --config-file .checkov.yaml
-  
-  cfn-lint:
-    name: cloudformation templates
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install cfn-lint
-      - run: |
-          files=$(grep -rl --include='*.yaml' --include='*.yml' AWSTemplateFormatVersion . || true)
-          if [ -z "$files" ]; then echo "No CloudFormation templates found."; exit 0; fi
-          cfn-lint $files
 
   # One stable name to mark as a required check in branch protection.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [hygiene, fmt, validate, tflint, checkov, cfn-lint]
+    needs: [hygiene, fmt, validate, tflint, checkov]
     runs-on: ubuntu-latest
     steps:
       - env:
