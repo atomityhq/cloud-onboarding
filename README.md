@@ -60,7 +60,6 @@ directories automatically, so adding `<cloud-provider>/` needs no workflow chang
 | validate | `terraform validate` on the oldest supported Terraform (1.5.7) and the latest |
 | tflint | Terraform and AWS rulesets |
 | checkov | security scan, with documented skips in `.checkov.yaml` |
-| cfn-lint | CloudFormation templates |
 | ci-ok | one aggregate result to use as the required status check |
 
 Run the cheap checks locally before pushing:
