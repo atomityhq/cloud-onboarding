@@ -1,0 +1,162 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  workflow_call: # also called by release.yml, so a tag can't ship without a green CI run
+
+permissions:
+  contents: read
+ 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  # Finds every cloud directory (aws/, azure/, gcp/ ...) that contains a
+  # versions.tf, so a new cloud is picked up by every job below automatically.
+  discover:
+    name: discover modules
+    runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.find.outputs.dirs }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        run: |
+          dirs=$(find . -mindepth 2 -maxdepth 2 -name versions.tf -not -path './.git/*' -printf '%h\n' \
+            | sed 's|^\./||' | sort | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "Modules: $dirs"
+          echo "dirs=$dirs" >> "$GITHUB_OUTPUT"
+
+  hygiene:
+    name: repo hygiene
+    needs: discover
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No state, tfvars or provider caches in git
+        run: |
+          bad=$(git ls-files | grep -E '(\.tfstate|(^|/)terraform\.tfvars$|(^|/)\.terraform/)' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::These files must never be committed:"
+            echo "$bad"
+            exit 1
+          fi
+      - name: Every module has the files customers and the wizard rely on
+        env:
+          DIRS: ${{ needs.discover.outputs.dirs }}
+        run: |
+          fail=0
+          for d in $(echo "$DIRS" | jq -r '.[]'); do
+            for f in versions.tf variables.tf outputs.tf terraform.tfvars.example README.md; do
+              if [ ! -f "$d/$f" ]; then
+                echo "::error::$d/$f is missing"
+                fail=1
+              fi
+            done
+          done
+          exit $fail
+
+  fmt:
+    name: terraform fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive -diff
+
+  # Runs on the oldest Terraform we claim to support (required_version) and on
+  # the latest, so neither claim can quietly stop being true.
+  validate:
+    name: validate ${{ matrix.dir }} (terraform ${{ matrix.terraform }})
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJson(needs.discover.outputs.dirs) }}
+        terraform: ["1.5.7", "latest"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ matrix.terraform }}
+          terraform_wrapper: false
+      - name: init and validate
+        working-directory: ${{ matrix.dir }}
+        run: |
+          if [ -f .terraform.lock.hcl ]; then
+            terraform init -backend=false -lockfile=readonly
+          else
+            terraform init -backend=false
+          fi
+          terraform validate
+
+  tflint:
+    name: tflint ${{ matrix.dir }}
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJson(needs.discover.outputs.dirs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.65.0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.tflint.d/plugins
+          key: tflint-${{ hashFiles('.tflint.hcl') }}
+      - name: install rulesets
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # avoids the anonymous API rate limit
+        run: tflint --init
+      - name: lint
+        env:
+          DIR: ${{ matrix.dir }}
+        run: tflint --chdir="$DIR" --config="$GITHUB_WORKSPACE/.tflint.hcl" --format=compact
+
+  checkov:
+    name: security scan (checkov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install checkov==3.4.3
+      - run: checkov --config-file .checkov.yaml
+  
+  cfn-lint:
+    name: cloudformation templates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install cfn-lint
+      - run: |
+          files=$(grep -rl --include='*.yaml' --include='*.yml' AWSTemplateFormatVersion . || true)
+          if [ -z "$files" ]; then echo "No CloudFormation templates found."; exit 0; fi
+          cfn-lint $files
+
+  # One stable name to mark as a required check in branch protection.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [hygiene, fmt, validate, tflint, checkov, cfn-lint]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Results: $RESULTS"
+          case "$RESULTS" in
+            *failure*|*cancelled*) exit 1 ;;
+          esac
+

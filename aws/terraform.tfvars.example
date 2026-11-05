@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (which is git-ignored) and fill in.
+# external_id = "paste-the-external-id-from-the-atomity-wizard"
+# s3_bucket   = "<bucket-name>"
+# aws_region  = "<aws region>"
+
+# Only if you run this in an AWS Organizations management account:
+# enable_organizations = true
