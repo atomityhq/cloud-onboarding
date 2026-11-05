@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Atomity read-only role for member accounts
+
+Parameters:
+  ExternalId:
+    Type: String
+    NoEcho: true
+    Description: Per-customer external ID from the Atomity onboarding wizard
+  AtomityRoleArn:
+    Type: String
+    Description: Atomity role allowed to assume this role
+
+Resources:
+  AtomityReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AtomityReadOnly
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref AtomityRoleArn
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      Policies:
+        - PolicyName: AtomityMemberPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AtomityProviderRecommendations
+                Effect: Allow
+                Action:
+                  - cost-optimization-hub:ListRecommendations
+                  - cost-optimization-hub:GetRecommendation
+                  - cost-optimization-hub:ListRecommendationSummaries
+                  - compute-optimizer:GetEC2InstanceRecommendations
+                  - compute-optimizer:GetAutoScalingGroupRecommendations
+                  - compute-optimizer:GetRecommendationSummaries
+                Resource: '*'
+              - Sid: AtomityResourceTags
+                Effect: Allow
+                Action:
+                  - tag:GetResources
+                Resource: '*'
+              - Sid: AtomityResourceInventory
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeVolumes
+                  - rds:DescribeDBInstances
+                  - elasticloadbalancing:DescribeLoadBalancers
+                Resource: '*'
+              - Sid: AtomityCloudWatchMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricData
+                Resource: '*'
