@@ -68,9 +68,29 @@ Paste the printed role ARN into the **Connect** step in Atomity.
 
 ## Remove Atomity's access
 
-Run `terraform destroy` from the same folder, or delete the `AtomityReadOnly` role in IAM to stop access immediately. For Organizations, deleting the `AtomityMemberRoles` StackSet also removes the role from every member account.
+Run this from the folder you deployed from:
 
-Terraform stops at the billing bucket while it still holds files. That's deliberate, so delete the role first if you want access gone right away.
+```bash
+terraform destroy
+```
+
+This removes the IAM role `AtomityReadOnly`, its permission policy and the Data Export. Atomity loses access immediately.
+
+Your billing bucket is kept if it still holds files. Terraform reports an error for the bucket. That's expected: the access is already removed, and the bucket and its files stay in your account. If the bucket is empty, `terraform destroy` deletes it.
+
+For Organizations, also delete the `AtomityMemberRoles` StackSet. Otherwise the role stays in your member accounts.
+
+### Delete the bucket and its files too (optional, cannot be undone)
+
+Terraform only empties a bucket when the configuration says so, so set that first:
+
+```bash
+terraform apply -var="delete_bucket_contents_on_destroy=true"
+terraform destroy
+```
+
+The first command changes only the bucket's setting, and deletes nothing. The second deletes the export, the role and its policy, every file in the bucket (including old versions, if versioning was on), and then the bucket.
+
 
 ## Notes
 

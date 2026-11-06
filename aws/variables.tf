@@ -70,3 +70,9 @@ variable "stackset_call_as" {
     error_message = "stackset_call_as must be SELF or DELEGATED_ADMIN."
   }
 }
+
+variable "delete_bucket_contents_on_destroy" {
+  type        = bool
+  default     = false
+  description = "When true, terraform destroy also deletes every file in the billing bucket, then the bucket. Apply this setting before destroying. Leave false to keep your billing data."
+}

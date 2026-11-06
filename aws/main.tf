@@ -132,6 +132,10 @@ resource "aws_iam_role_policy" "atomity" {
 resource "aws_s3_bucket" "exports" {
   bucket = var.s3_bucket
   tags   = local.tags
+
+  # false (default): `terraform destroy` keeps the bucket while it holds files.
+  # true: destroy also deletes every file (and version) before deleting the bucket.
+  force_destroy = var.delete_bucket_contents_on_destroy
 }
 
 resource "aws_s3_bucket_public_access_block" "exports" {
