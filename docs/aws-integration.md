@@ -89,8 +89,8 @@ contract: the role name, the trust rules, and the data format.
 
 | Approach | Best for | Status |
 |---|---|---|
-| Terraform | Teams that use infrastructure as code, or want a preview and a clean removal | Implemented. The primary approach. |
-| CloudFormation | AWS-only teams that prefer the console and no extra tools | Planned |
+| Terraform | Teams that use infrastructure as code, or want a preview and a clean removal | Implemented |
+| CloudFormation | AWS-only teams that prefer the console and no extra tools | Implemented |
 | Manual setup | Customers who cannot use infrastructure as code | Step-by-step guide |
 | AWS CDK | Teams that standardize on CDK | Not planned for now |
 | Custom scripts (SDK or CLI) | None | Not offered |
