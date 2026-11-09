@@ -1,0 +1,91 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AtomityCostData",
+      "Effect": "Allow",
+      "Action": [
+        "cur:DescribeReportDefinitions",
+        "bcm-data-exports:GetExport",
+        "bcm-data-exports:ListExports",
+        "ce:GetCostAndUsage",
+        "ce:GetCostForecast",
+        "ce:GetAnomalyMonitors",
+        "ce:GetAnomalySubscriptions",
+        "ce:GetAnomalies"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AtomityS3Export",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "${BucketArn}",
+        "${BucketArn}/*"
+      ]
+    },
+    {
+      "Sid": "AtomityProviderRecommendations",
+      "Effect": "Allow",
+      "Action": [
+        "cost-optimization-hub:ListRecommendations",
+        "cost-optimization-hub:GetRecommendation",
+        "cost-optimization-hub:ListRecommendationSummaries",
+        "compute-optimizer:GetEC2InstanceRecommendations",
+        "compute-optimizer:GetAutoScalingGroupRecommendations",
+        "compute-optimizer:GetRecommendationSummaries"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AtomityOrganizations",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:ListAccounts",
+        "organizations:DescribeOrganization",
+        "organizations:DescribeAccount"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AtomityResourceTags",
+      "Effect": "Allow",
+      "Action": [
+        "tag:GetResources"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AtomityResourceInventory",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeVolumes",
+        "rds:DescribeDBInstances",
+        "elasticloadbalancing:DescribeLoadBalancers"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AtomityCloudWatchMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:GetMetricData"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AtomityS3BucketDiscovery",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListAllMyBuckets",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

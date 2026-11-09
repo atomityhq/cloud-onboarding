@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
- 
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
 
@@ -120,6 +120,36 @@ jobs:
           DIR: ${{ matrix.dir }}
         run: tflint --chdir="$DIR" --config="$GITHUB_WORKSPACE/.tflint.hcl" --format=compact
 
+  # CloudFormation templates. <cloud>/cloudformation/atomity.yaml is generated
+  # from atomity.src.yaml and the shared files (policies, focus_query.sql,
+  # member_role.yaml), so first check it is up to date, then lint every template.
+  cfn-lint:
+    name: cfn-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install cfn-lint==1.60.0 pyyaml # pyyaml: build.py checks member_role.yaml for policy drift
+      - name: Generated templates are up to date and member role matches shared policies
+        run: |
+          fail=0
+          for b in $(git ls-files '*/cloudformation/build.py'); do
+            python3 "$b" --check || fail=1
+          done
+          exit $fail
+      - name: Lint templates
+        run: |
+          # *.src.yaml has build markers and is not valid CloudFormation on its own
+          files=$(git ls-files '*/cloudformation/*.yaml' '*/member_role.yaml' | grep -v '\.src\.yaml$' || true)
+          if [ -z "$files" ]; then
+            echo "::error::no CloudFormation templates found"
+            exit 1
+          fi
+          echo "$files"
+          cfn-lint $files
+
   checkov:
     name: security scan (checkov)
     runs-on: ubuntu-latest
@@ -135,7 +165,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [hygiene, fmt, validate, tflint, checkov]
+    needs: [hygiene, fmt, validate, tflint, cfn-lint, checkov]
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -145,4 +175,3 @@ jobs:
           case "$RESULTS" in
             *failure*|*cancelled*) exit 1 ;;
           esac
-

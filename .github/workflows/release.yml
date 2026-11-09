@@ -1,12 +1,23 @@
 name: release
 
-# Tag a cloud's version to publish it:  git tag aws-v1.0.0 && git push origin aws-v1.0.0
-# That builds aws-v1.0.0.zip from the aws/ directory only (files at the zip root),
-# with a checksum and a build-provenance attestation, and attaches them to a release.
+# Each setup method is released on its own tag, because a customer uses only one:
+#
+#   Terraform       git tag aws-tf-v1.0.0   && git push origin aws-tf-v1.0.0
+#   CloudFormation  git tag aws-cfn-v1.0.0  && git push origin aws-cfn-v1.0.0
+#
+# Terraform release:      aws-tf-v1.0.0.zip (the module, without cloudformation/),
+#                         a checksum and a build-provenance attestation.
+# CloudFormation release: atomity.yaml (generated from <cloud>/cloudformation/),
+#                         a checksum and a build-provenance attestation.
+#
+# Both methods read the same shared files (policies/, focus_query.sql,
+# member_role.yaml). A release warns when those changed since the other
+# method's latest release, so one method does not fall behind unnoticed.
 on:
   push:
     tags:
-      - "aws-v[0-9]+.[0-9]+.[0-9]+"
+      - "aws-tf-v[0-9]+.[0-9]+.[0-9]+"
+      - "aws-cfn-v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: read
@@ -15,7 +26,8 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
-  release:
+  terraform:
+    if: ${{ contains(github.ref_name, '-tf-') }}
     needs: ci
     runs-on: ubuntu-latest
     permissions:
@@ -27,11 +39,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve cloud and version from the tag
+      - name: Resolve cloud from the tag
         id: v
         run: |
           tag="$GITHUB_REF_NAME"
-          cloud="${tag%%-v*}"
+          cloud="${tag%%-*}" # aws-tf-v1.0.0 -> aws (cloud names contain no hyphen)
           if [ ! -d "$cloud" ]; then
             echo "::error::Tag $tag has no matching directory '$cloud/'"
             exit 1
@@ -46,19 +58,46 @@ jobs:
             exit 1
           fi
 
-      - name: Build the zip (tracked files of one cloud, at the zip root)
+      - name: Warn if CloudFormation is behind on shared files
+        env:
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          other=$(git tag --list "${CLOUD}-cfn-v[0-9]*" --sort=-v:refname | head -n 1)
+          if [ -n "$other" ] && ! git diff --quiet "$other" "$GITHUB_SHA" -- \
+              "$CLOUD/policies" "$CLOUD/focus_query.sql" "$CLOUD/member_role.yaml"; then
+            echo "::warning::Shared files changed since $other. Release CloudFormation too, or it keeps the old policies."
+          fi
+
+      - name: Build the zip (tracked files of one cloud, at the zip root, without cloudformation/)
         env:
           TAG: ${{ steps.v.outputs.tag }}
           CLOUD: ${{ steps.v.outputs.cloud }}
         run: |
           mkdir dist
-          git archive --format=zip --output="dist/${TAG}.zip" "${GITHUB_SHA}:${CLOUD}"
+          git archive --format=zip --output="dist/${TAG}.zip" "${GITHUB_SHA}:${CLOUD}" -- . ':(exclude)cloudformation'
           (cd dist && sha256sum "${TAG}.zip" > "${TAG}.zip.sha256")
           unzip -l "dist/${TAG}.zip"
-          if unzip -Z1 "dist/${TAG}.zip" | grep -E '\.tfstate|^terraform\.tfvars$|\.terraform/'; then
+          if unzip -Z1 "dist/${TAG}.zip" | grep -E '\.tfstate|^terraform\.tfvars$|\.terraform/|^cloudformation/'; then
             echo "::error::Release zip contains files that must never ship"
             exit 1
           fi
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      # The module reads policies/*.json, member_role.yaml and focus_query.sql from
+      # its own folder. Validate the extracted zip, not the repo, so a file that
+      # the zip is missing fails here instead of on a customer's machine.
+      - name: The zip alone must be a working module
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          mkdir verify
+          unzip -q "dist/${TAG}.zip" -d verify
+          cd verify
+          terraform init -backend=false
+          terraform validate
 
       - uses: actions/attest-build-provenance@v2
         with:
@@ -68,6 +107,74 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.v.outputs.tag }}
+          CLOUD: ${{ steps.v.outputs.cloud }}
         run: |
+          # notes cover changes since the previous Terraform release,
+          prev=$(git tag --list "${CLOUD}-tf-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
           gh release create "$TAG" "dist/${TAG}.zip" "dist/${TAG}.zip.sha256" \
-            --title "$TAG" --generate-notes --verify-tag
+            --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag
+
+  cloudformation:
+    if: ${{ contains(github.ref_name, '-cfn-') }}
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve cloud from the tag
+        id: v
+        run: |
+          tag="$GITHUB_REF_NAME"
+          cloud="${tag%%-*}" # aws-cfn-v1.0.0 -> aws
+          if [ ! -f "$cloud/cloudformation/atomity.yaml" ]; then
+            echo "::error::Tag $tag has no template at '$cloud/cloudformation/atomity.yaml'"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "cloud=$cloud" >> "$GITHUB_OUTPUT"
+
+      - name: Tag must point at a commit on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main. Releases are cut from main only."
+            exit 1
+          fi
+
+      - name: Warn if Terraform is behind on shared files
+        env:
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          other=$(git tag --list "${CLOUD}-tf-v[0-9]*" --sort=-v:refname | head -n 1)
+          if [ -n "$other" ] && ! git diff --quiet "$other" "$GITHUB_SHA" -- \
+              "$CLOUD/policies" "$CLOUD/focus_query.sql" "$CLOUD/member_role.yaml"; then
+            echo "::warning::Shared files changed since $other. Release Terraform too, or it keeps the old policies."
+          fi
+
+      # CI has already run build.py --check, so the committed template is current.
+      - name: Collect the template
+        env:
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          mkdir dist
+          cp "${CLOUD}/cloudformation/atomity.yaml" dist/atomity.yaml
+          (cd dist && sha256sum atomity.yaml > atomity.yaml.sha256)
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/atomity.yaml
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          prev=$(git tag --list "${CLOUD}-cfn-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
+          gh release create "$TAG" dist/atomity.yaml dist/atomity.yaml.sha256 \
+            --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag

@@ -1,52 +1,92 @@
-# Atomity Terraform onboarding
+# Atomity cloud onboarding
 
-Terraform that connects your cloud accounts to Atomity with read-only access.
-The Atomity onboarding wizard generates the exact commands for you.
+Terraform and CloudFormation that connect your cloud accounts to Atomity with
+read-only access. The Atomity onboarding wizard generates the exact commands for you.
 
-| Cloud | Directory | Status |
-|---|---|---|
-| AWS | [`aws/`](aws/) | Available |
+| Cloud | Directory | Setup methods | Status |
+|---|---|---|---|
+| AWS | [`aws/`](aws/) | Terraform, CloudFormation | Available |
 
 ## For customers
 
-Each cloud is released on its own as a zip with no Git required. Terraform can
-fetch and initialize it in one step. For e.g:
+Choose one setup method per account. Each method is released on its own, with no
+Git required.
+
+### Terraform
+
+Terraform can fetch and initialize the module in one step. For example:
 
 ```bash
 mkdir atomity-aws && cd atomity-aws
-terraform init -from-module="https://github.com/atomity/terraform-onboarding/releases/download/aws-v1.0.0/aws-v1.0.0.zip"
+terraform init -from-module="https://github.com/atomity/terraform-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip"
 ```
 
 See the cloud's own README for inputs and the full command list. Prefer to
 inspect the code first?
 
 ```bash
-curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-v1.0.0/aws-v1.0.0.zip
-curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-v1.0.0/aws-v1.0.0.zip.sha256
-sha256sum -c aws-v1.0.0.zip.sha256
-unzip aws-v1.0.0.zip -d atomity-aws
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip.sha256
+sha256sum -c aws-tf-v1.0.0.zip.sha256
+unzip aws-tf-v1.0.0.zip -d atomity-aws
 ```
 
 Every release zip also carries a build-provenance attestation:
 
 ```bash
-gh attestation verify aws-v1.0.0.zip --repo atomity/terraform-onboarding
+gh attestation verify aws-tf-v1.0.0.zip --repo atomity/terraform-onboarding
 ```
+
+### CloudFormation
+
+The release is a single template, `atomity.yaml`:
+
+```bash
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-cfn-v1.0.0/atomity.yaml
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-cfn-v1.0.0/atomity.yaml.sha256
+sha256sum -c atomity.yaml.sha256
+gh attestation verify atomity.yaml --repo atomity/terraform-onboarding
+```
+
+The cloud's own README has the deploy commands and parameters.
 
 ## For maintainers
 
 ### Layout
 
 ```
-aws/                  one standalone Terraform root per cloud
-.github/workflows/    ci.yml and release.yml
-.tflint.hcl           lint rules
-.checkov.yaml         security scan config (every skip has a reason)
+aws/                      one cloud, with both setup methods
+  *.tf                    the Terraform root module
+  policies/               role trust and permission policies, used by both methods
+  member_role.yaml        member-account role (Organizations), used by both methods
+  focus_query.sql         billing export query, used by both methods
+  cloudformation/         the CloudFormation template (generated) and its build script
+.github/workflows/        ci.yml and release.yml
+.tflint.hcl               lint rules
+.checkov.yaml             security scan config (every skip has a reason)
 ```
 
 Each cloud directory is its own root module, with its own state and its own
 `versions.tf`, `variables.tf`, `outputs.tf`, `terraform.tfvars.example`, and
 `README.md`. CI requires those files.
+
+### Keeping the two methods in sync
+
+Both methods must give the customer the same role, permissions and export, so
+they read the same files: `policies/trust.json`, `policies/permission.json`,
+`member_role.yaml` and `focus_query.sql`. Terraform reads them directly. A
+CloudFormation template has to be one self-contained file, so
+`cloudformation/atomity.yaml` is generated from `atomity.src.yaml` and those files.
+
+After changing a shared file or `atomity.src.yaml`, regenerate and commit:
+
+```bash
+python3 aws/cloudformation/build.py
+```
+
+The build also checks that `member_role.yaml` (a narrower copy of the role) still
+matches the shared policies, and fails if it has drifted. Never edit
+`atomity.yaml` by hand.
 
 ### CI
 
@@ -59,6 +99,7 @@ directories automatically, so adding `<cloud-provider>/` needs no workflow chang
 | fmt | `terraform fmt -check` |
 | validate | `terraform validate` on the oldest supported Terraform (1.5.7) and the latest |
 | tflint | Terraform and AWS rulesets |
+| cfn-lint | `atomity.yaml` is up to date, `member_role.yaml` matches the shared policies, and every CloudFormation template passes `cfn-lint` |
 | checkov | security scan, with documented skips in `.checkov.yaml` |
 | ci-ok | one aggregate result to use as the required status check |
 
@@ -68,23 +109,41 @@ Run the cheap checks locally before pushing:
 terraform fmt -check -recursive
 tflint --init && tflint --chdir=aws --config="$PWD/.tflint.hcl"
 checkov --config-file .checkov.yaml
+pip install cfn-lint pyyaml
+python3 aws/cloudformation/build.py --check
+cfn-lint aws/cloudformation/atomity.yaml aws/member_role.yaml
 ```
 
 ### Releasing
 
+Each setup method is released on its own tag, because a customer uses only one:
+
 ```bash
 git checkout main && git pull
-git tag <cloud-provider>-v1.0.0
-git push origin <cloud-provider>-v1.0.0
+git tag <cloud-provider>-tf-v1.0.0      # Terraform
+git push origin <cloud-provider>-tf-v1.0.0
+git tag <cloud-provider>-cfn-v1.0.0     # CloudFormation
+git push origin <cloud-provider>-cfn-v1.0.0
 ```
 
-`release.yml` re-runs CI, checks the tag is on `main`, zips only the tracked
-files of `aws/` (at the zip root), writes a checksum, attests provenance, and
-publishes the release. Tags are `<cloud>-vMAJOR.MINOR.PATCH`, so each cloud
-versions independently.
+`release.yml` re-runs CI and checks the tag is on `main`. Then, depending on the tag:
 
-Breaking changes to inputs or outputs are a major version. The wizard pins a
-tag, so shipping a new version means bumping the tag in the wizard.
+- **`-tf-` (Terraform):** zips the tracked files of `aws/` at the zip root, without
+  `cloudformation/`, and checks that the extracted zip alone passes `terraform
+  validate`. It writes a checksum, attests provenance, and publishes the release.
+- **`-cfn-` (CloudFormation):** publishes `atomity.yaml` with a checksum and a
+  provenance attestation.
+
+Tags are `<cloud>-<method>-vMAJOR.MINOR.PATCH`, so each cloud and method versions
+independently.
+
+When a shared file changes (see above), release both methods, or one keeps the
+old policies. Each release warns if the shared files changed since the other
+method's latest release.
+
+Breaking changes to inputs, parameters or outputs are a major version. The wizard
+pins one tag per method, so shipping a new version means bumping that tag in the
+wizard.
 
 ### One-time repository settings
 
@@ -98,5 +157,6 @@ tag, so shipping a new version means bumping the tag in the wizard.
 
 1. Create `<cloud>/` with the required files
 2. Add the directory to `.github/dependabot.yml` and `.github/CODEOWNERS`
-3. Add the cloud to `.github/workflows/release.yml` tag patterns, if it isn't one of `aws`, `azure`, `gcp`
+3. Add the cloud's tag pattern, for example `<cloud>-tf-v[0-9]+.[0-9]+.[0-9]+`, to the tag filter in `.github/workflows/release.yml`
 4. Add a tflint ruleset for that provider to `.tflint.hcl`
+5. Only if the cloud also has a CloudFormation-style template: add `<cloud>/cloudformation/` with a `build.py`, and a `<cloud>-cfn-v…` tag pattern

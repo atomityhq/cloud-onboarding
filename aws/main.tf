@@ -17,16 +17,9 @@ resource "aws_iam_role" "atomity" {
   name = local.role_name
   tags = local.tags
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { AWS = var.atomity_role_arn }
-      Action    = "sts:AssumeRole"
-      Condition = {
-        StringEquals = { "sts:ExternalId" = var.external_id }
-      }
-    }]
+  assume_role_policy = templatefile("${path.module}/policies/trust.json", {
+    AtomityRoleArn = var.atomity_role_arn
+    ExternalId     = var.external_id
   })
 }
 
@@ -37,92 +30,8 @@ resource "aws_iam_role_policy" "atomity" {
   name = "AtomityPermissions"
   role = aws_iam_role.atomity.id
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AtomityCostData"
-        Effect = "Allow"
-        Action = [
-          "cur:DescribeReportDefinitions",
-          "bcm-data-exports:GetExport",
-          "bcm-data-exports:ListExports",
-          "ce:GetCostAndUsage",
-          "ce:GetCostForecast",
-          "ce:GetAnomalyMonitors",
-          "ce:GetAnomalySubscriptions",
-          "ce:GetAnomalies",
-        ]
-        Resource = "*"
-      },
-      {
-        Sid    = "AtomityS3Export"
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject",
-          "s3:ListBucket",
-        ]
-        Resource = [
-          aws_s3_bucket.exports.arn,
-          "${aws_s3_bucket.exports.arn}/*",
-        ]
-      },
-      {
-        Sid    = "AtomityProviderRecommendations"
-        Effect = "Allow"
-        Action = [
-          "cost-optimization-hub:ListRecommendations",
-          "cost-optimization-hub:GetRecommendation",
-          "cost-optimization-hub:ListRecommendationSummaries",
-          "compute-optimizer:GetEC2InstanceRecommendations",
-          "compute-optimizer:GetAutoScalingGroupRecommendations",
-          "compute-optimizer:GetRecommendationSummaries",
-        ]
-        Resource = "*"
-      },
-      {
-        Sid    = "AtomityOrganizations"
-        Effect = "Allow"
-        Action = [
-          "organizations:ListAccounts",
-          "organizations:DescribeOrganization",
-          "organizations:DescribeAccount",
-        ]
-        Resource = "*"
-      },
-      {
-        Sid      = "AtomityResourceTags"
-        Effect   = "Allow"
-        Action   = ["tag:GetResources"]
-        Resource = "*"
-      },
-      {
-        Sid    = "AtomityResourceInventory"
-        Effect = "Allow"
-        Action = [
-          "ec2:DescribeInstances",
-          "ec2:DescribeVolumes",
-          "rds:DescribeDBInstances",
-          "elasticloadbalancing:DescribeLoadBalancers",
-        ]
-        Resource = "*"
-      },
-      {
-        Sid      = "AtomityCloudWatchMetrics"
-        Effect   = "Allow"
-        Action   = ["cloudwatch:GetMetricData"]
-        Resource = "*"
-      },
-      {
-        Sid    = "AtomityS3BucketDiscovery"
-        Effect = "Allow"
-        Action = [
-          "s3:ListAllMyBuckets",
-          "s3:GetBucketLocation",
-        ]
-        Resource = "*"
-      },
-    ]
+  policy = templatefile("${path.module}/policies/permission.json", {
+    BucketArn = aws_s3_bucket.exports.arn
   })
 }
 

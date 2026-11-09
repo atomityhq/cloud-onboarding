@@ -1,0 +1,469 @@
+# GENERATED FILE - do not edit.
+# Edit atomity.src.yaml or the files in aws/policies/, then run: python3 build.py
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Atomity AWS integration. Creates a read-only IAM role, a private S3 bucket and
+  an AWS Data Export (FOCUS 1.2, Parquet) in this account.
+
+Metadata:
+  cfn-lint:
+    config:
+      # OrganizationRootId defaults to empty; a rule requires it whenever the StackSet exists.
+      ignore_checks: [W1030]
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Provided by Atomity }
+        Parameters: [AtomityRoleArn, ExternalId]
+      - Label: { default: Billing data }
+        Parameters: [BucketName, ExportName, S3Prefix, TimeGranularity]
+      - Label: { default: Deployment mode (see README) }
+        Parameters: [Deploy, BucketRegion]
+      - Label: { default: AWS Organizations (optional) }
+        Parameters: [EnableOrganizations, OrganizationRootId, StackSetCallAs]
+
+Parameters:
+  AtomityRoleArn:
+    Type: String
+    Default: arn:aws:iam::602578933792:role/AtomityCollector
+    Description: Atomity role allowed to assume the read-only role in this account. Same for every customer.
+    AllowedPattern: ^arn:aws:iam::[0-9]{12}:role/.+$
+    ConstraintDescription: Must be an IAM role ARN, for example arn:aws:iam::123456789012:role/name.
+  ExternalId:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Per-customer external ID shown in the Atomity onboarding wizard. Not needed for BucketOnly.
+    AllowedPattern: ^[\w+=,.@:\/-]*$
+    ConstraintDescription: Letters, digits and the characters + = , . @ - _ / only.
+  BucketName:
+    Type: String
+    Description: Name of the S3 bucket that receives the billing export. Must be globally unique.
+    AllowedPattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
+  ExportName:
+    Type: String
+    Default: atomity-exports
+    AllowedPattern: ^[0-9A-Za-z_-]{1,128}$
+  S3Prefix:
+    Type: String
+    Default: atomity-exports
+    Description: Folder inside the bucket where export files are written.
+  TimeGranularity:
+    Type: String
+    Default: HOURLY
+    AllowedValues: [HOURLY, DAILY, MONTHLY]
+  Deploy:
+    Type: String
+    Default: Everything
+    AllowedValues: [Everything, BucketOnly, AccessOnly]
+    Description: >-
+      Everything: bucket, role and export (deploy in us-east-1).
+      BucketOnly: just the bucket, in the region where you want to store data.
+      AccessOnly: role and export (deploy in us-east-1) for a bucket created with BucketOnly.
+  BucketRegion:
+    Type: String
+    Default: ""
+    AllowedPattern: ^([a-z]{2}(-[a-z]+)+-[0-9])?$
+    Description: Region of the bucket. Required only for AccessOnly.
+  EnableOrganizations:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Set to true in an AWS Organizations management (or delegated admin) account. Also deploys
+      the member-account role to every account through a StackSet.
+  OrganizationRootId:
+    Type: String
+    Default: ""
+    AllowedPattern: ^(r-[0-9a-z]{4,32})?$
+    Description: >-
+      ID of the organization root, for example r-ab12. Required when EnableOrganizations is true.
+      Find it with: aws organizations list-roots
+  StackSetCallAs:
+    Type: String
+    Default: SELF
+    AllowedValues: [SELF, DELEGATED_ADMIN]
+    Description: SELF in the management account, DELEGATED_ADMIN in a StackSets delegated admin account.
+
+Rules:
+  AccessNeedsUsEast1:
+    RuleCondition: !Or
+      - !Equals [!Ref Deploy, Everything]
+      - !Equals [!Ref Deploy, AccessOnly]
+    Assertions:
+      - Assert: !Equals [!Ref "AWS::Region", us-east-1]
+        AssertDescription: AWS creates Data Exports only in us-east-1. Deploy this stack in us-east-1.
+  AccessNeedsExternalId:
+    RuleCondition: !Or
+      - !Equals [!Ref Deploy, Everything]
+      - !Equals [!Ref Deploy, AccessOnly]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ExternalId, ""]]
+        AssertDescription: ExternalId is required.
+  OrganizationsNeedsRootId:
+    RuleCondition: !And
+      - !Or
+        - !Equals [!Ref Deploy, Everything]
+        - !Equals [!Ref Deploy, AccessOnly]
+      - !Equals [!Ref EnableOrganizations, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref OrganizationRootId, ""]]
+        AssertDescription: Set OrganizationRootId (aws organizations list-roots).
+  AccessOnlyNeedsBucketRegion:
+    RuleCondition: !Equals [!Ref Deploy, AccessOnly]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref BucketRegion, ""]]
+        AssertDescription: Set BucketRegion to the region of the bucket.
+
+Conditions:
+  CreateBucket: !Or
+    - !Equals [!Ref Deploy, Everything]
+    - !Equals [!Ref Deploy, BucketOnly]
+  CreateAccess: !Or
+    - !Equals [!Ref Deploy, Everything]
+    - !Equals [!Ref Deploy, AccessOnly]
+  CreateMemberRoles: !And
+    - !Condition CreateAccess
+    - !Equals [!Ref EnableOrganizations, "true"]
+  IsEverything: !Equals [!Ref Deploy, Everything]
+  IsAccessOnly: !Equals [!Ref Deploy, AccessOnly]
+
+Resources:
+  # --- bucket (BucketOnly or Everything) -----------------------------------
+  Bucket:
+    Type: AWS::S3::Bucket
+    # The billing history belongs to the customer: removing the stack keeps the bucket.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: CreateBucket
+    Properties:
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - { Key: ManagedBy, Value: cloudformation }
+        - { Key: Purpose, Value: atomity-cost-visibility }
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateBucket
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAWSDataExportsToWriteToS3AndCheckPolicy
+            Effect: Allow
+            Principal:
+              Service:
+                - billingreports.amazonaws.com
+                - bcm-data-exports.amazonaws.com
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+            Resource:
+              - !GetAtt Bucket.Arn
+              - !Sub "${Bucket.Arn}/*"
+            Condition:
+              StringLike:
+                aws:SourceAccount: !Ref "AWS::AccountId"
+                aws:SourceArn:
+                  - !Sub "arn:aws:cur:us-east-1:${AWS::AccountId}:definition/*"
+                  - !Sub "arn:aws:bcm-data-exports:us-east-1:${AWS::AccountId}:export/*"
+
+  # --- role and export (AccessOnly or Everything) --------------------------
+  Role:
+    Type: AWS::IAM::Role
+    Condition: CreateAccess
+    Properties:
+      RoleName: AtomityReadOnly # fixed: Atomity's side allows only this exact name
+      AssumeRolePolicyDocument: {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Ref": "AtomityRoleArn"
+                }
+              },
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "sts:ExternalId": {
+                    "Ref": "ExternalId"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      Policies:
+        - PolicyName: AtomityPermissions
+          PolicyDocument: {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "AtomityCostData",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cur:DescribeReportDefinitions",
+                    "bcm-data-exports:GetExport",
+                    "bcm-data-exports:ListExports",
+                    "ce:GetCostAndUsage",
+                    "ce:GetCostForecast",
+                    "ce:GetAnomalyMonitors",
+                    "ce:GetAnomalySubscriptions",
+                    "ce:GetAnomalies"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "AtomityS3Export",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:ListBucket"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:aws:s3:::${BucketName}"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:s3:::${BucketName}/*"
+                    }
+                  ]
+                },
+                {
+                  "Sid": "AtomityProviderRecommendations",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cost-optimization-hub:ListRecommendations",
+                    "cost-optimization-hub:GetRecommendation",
+                    "cost-optimization-hub:ListRecommendationSummaries",
+                    "compute-optimizer:GetEC2InstanceRecommendations",
+                    "compute-optimizer:GetAutoScalingGroupRecommendations",
+                    "compute-optimizer:GetRecommendationSummaries"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "AtomityOrganizations",
+                  "Effect": "Allow",
+                  "Action": [
+                    "organizations:ListAccounts",
+                    "organizations:DescribeOrganization",
+                    "organizations:DescribeAccount"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "AtomityResourceTags",
+                  "Effect": "Allow",
+                  "Action": [
+                    "tag:GetResources"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "AtomityResourceInventory",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:DescribeInstances",
+                    "ec2:DescribeVolumes",
+                    "rds:DescribeDBInstances",
+                    "elasticloadbalancing:DescribeLoadBalancers"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "AtomityCloudWatchMetrics",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cloudwatch:GetMetricData"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "AtomityS3BucketDiscovery",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:ListAllMyBuckets",
+                    "s3:GetBucketLocation"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+      Tags:
+        - { Key: ManagedBy, Value: cloudformation }
+        - { Key: Purpose, Value: atomity-cost-visibility }
+
+  # The export needs the bucket policy to exist first. With Everything the policy is in
+  # this stack, so the order is enforced here. With AccessOnly it is in the BucketOnly
+  # stack, which must be deployed first.
+  Export:
+    Type: AWS::BCMDataExports::Export
+    Condition: IsEverything
+    DependsOn: BucketPolicy # AWS validates the bucket policy when the export is created
+    Properties:
+      Export:
+        Name: !Ref ExportName
+        DataQuery:
+          QueryStatement: |-
+            SELECT * FROM FOCUS_1_2_AWS
+          TableConfigurations:
+            FOCUS_1_2_AWS:
+              TIME_GRANULARITY: !Ref TimeGranularity
+        DestinationConfigurations:
+          S3Destination:
+            S3Bucket: !Ref BucketName
+            S3Prefix: !Ref S3Prefix
+            S3Region: !Ref "AWS::Region"
+            S3OutputConfigurations:
+              Format: PARQUET
+              Compression: PARQUET
+              OutputType: CUSTOM
+              Overwrite: OVERWRITE_REPORT
+        RefreshCadence:
+          Frequency: SYNCHRONOUS
+
+  ExportForExistingBucket:
+    Type: AWS::BCMDataExports::Export
+    Condition: IsAccessOnly
+    Properties:
+      Export:
+        Name: !Ref ExportName
+        DataQuery:
+          QueryStatement: |-
+            SELECT * FROM FOCUS_1_2_AWS
+          TableConfigurations:
+            FOCUS_1_2_AWS:
+              TIME_GRANULARITY: !Ref TimeGranularity
+        DestinationConfigurations:
+          S3Destination:
+            S3Bucket: !Ref BucketName
+            S3Prefix: !Ref S3Prefix
+            S3Region: !Ref BucketRegion
+            S3OutputConfigurations:
+              Format: PARQUET
+              Compression: PARQUET
+              OutputType: CUSTOM
+              Overwrite: OVERWRITE_REPORT
+        RefreshCadence:
+          Frequency: SYNCHRONOUS
+
+  # --- Organizations: narrower read-only role in every member account ------
+  # Prerequisite, once per organization, from the management account:
+  #   aws organizations enable-aws-service-access \
+  #     --service-principal member.org.stacksets.cloudformation.amazonaws.com
+  MemberRoles:
+    Type: AWS::CloudFormation::StackSet
+    Condition: CreateMemberRoles
+    Properties:
+      StackSetName: AtomityMemberRoles
+      Description: Atomity read-only role for member accounts
+      PermissionModel: SERVICE_MANAGED
+      CallAs: !Ref StackSetCallAs
+      Capabilities: [CAPABILITY_NAMED_IAM]
+      AutoDeployment: # new accounts get the role
+        Enabled: true
+        RetainStacksOnAccountRemoval: false
+      Parameters:
+        - { ParameterKey: ExternalId, ParameterValue: !Ref ExternalId }
+        - { ParameterKey: AtomityRoleArn, ParameterValue: !Ref AtomityRoleArn }
+      StackInstancesGroup:
+        - DeploymentTargets:
+            OrganizationalUnitIds: [!Ref OrganizationRootId]
+          Regions: [!Ref "AWS::Region"] # IAM is global, one region is enough
+      Tags:
+        - { Key: ManagedBy, Value: cloudformation }
+        - { Key: Purpose, Value: atomity-cost-visibility }
+      TemplateBody: |-
+        AWSTemplateFormatVersion: '2010-09-09'
+        Description: Atomity read-only role for member accounts
+
+        Parameters:
+          ExternalId:
+            Type: String
+            NoEcho: true
+            Description: Per-customer external ID from the Atomity onboarding wizard
+          AtomityRoleArn:
+            Type: String
+            Description: Atomity role allowed to assume this role
+
+        Resources:
+          AtomityReadOnlyRole:
+            Type: AWS::IAM::Role
+            Properties:
+              RoleName: AtomityReadOnly
+              AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - Effect: Allow
+                    Principal:
+                      AWS: !Ref AtomityRoleArn
+                    Action: sts:AssumeRole
+                    Condition:
+                      StringEquals:
+                        sts:ExternalId: !Ref ExternalId
+              Policies:
+                - PolicyName: AtomityMemberPermissions
+                  PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                      - Sid: AtomityProviderRecommendations
+                        Effect: Allow
+                        Action:
+                          - cost-optimization-hub:ListRecommendations
+                          - cost-optimization-hub:GetRecommendation
+                          - cost-optimization-hub:ListRecommendationSummaries
+                          - compute-optimizer:GetEC2InstanceRecommendations
+                          - compute-optimizer:GetAutoScalingGroupRecommendations
+                          - compute-optimizer:GetRecommendationSummaries
+                        Resource: '*'
+                      - Sid: AtomityResourceTags
+                        Effect: Allow
+                        Action:
+                          - tag:GetResources
+                        Resource: '*'
+                      - Sid: AtomityResourceInventory
+                        Effect: Allow
+                        Action:
+                          - ec2:DescribeInstances
+                          - ec2:DescribeVolumes
+                          - rds:DescribeDBInstances
+                          - elasticloadbalancing:DescribeLoadBalancers
+                        Resource: '*'
+                      - Sid: AtomityCloudWatchMetrics
+                        Effect: Allow
+                        Action:
+                          - cloudwatch:GetMetricData
+                        Resource: '*'
+
+Outputs:
+  RoleArn:
+    Condition: CreateAccess
+    Description: Paste this into the Role ARN field in Atomity.
+    Value: !GetAtt Role.Arn
+  S3Bucket:
+    Condition: CreateAccess
+    Value: !Ref BucketName
+  S3Prefix:
+    Condition: CreateAccess
+    Value: !Ref S3Prefix
+  ExportName:
+    Condition: CreateAccess
+    Value: !Ref ExportName
+  Region:
+    Condition: CreateAccess
+    Description: Region of the bucket.
+    Value: !If [IsAccessOnly, !Ref BucketRegion, !Ref "AWS::Region"]
+  Scope:
+    Condition: CreateAccess
+    Value: !If [CreateMemberRoles, organization, single_account]
+  MemberStackSet:
+    Condition: CreateMemberRoles
+    Value: AtomityMemberRoles
