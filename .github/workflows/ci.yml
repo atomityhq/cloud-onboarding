@@ -107,6 +107,9 @@ jobs:
       - uses: terraform-linters/setup-tflint@v4
         with:
           tflint_version: v0.65.0
+          github_token: ${{ github.token }}
+          cache: true
+          tflint_config_path: .tflint.hcl
       - uses: actions/cache@v4
         with:
           path: ~/.tflint.d/plugins
