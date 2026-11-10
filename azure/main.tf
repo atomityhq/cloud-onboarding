@@ -35,9 +35,11 @@ locals {
   # the destination storage account (not necessarily the export's own scope).
   storage_subscription_id = split("/", local.storage_account_id)[2]
 
-  # The wizard may write root_folder_path = "". Treat that the same as unset.
-  root_folder_trimmed = var.root_folder_path == null ? "" : trimspace(var.root_folder_path)
-  root_folder_path    = local.root_folder_trimmed == "" ? null : local.root_folder_trimmed
+  # Azure rejects an export with no root folder ("Invalid deliveryInfo destination
+  # rootFolderPath; value cannot be empty or blank"), so unset, empty, blank or just slashes
+  # all mean the default. The AWS export has the same default prefix.
+  root_folder_cleaned = trim(trimspace(var.root_folder_path == null ? "" : var.root_folder_path), "/")
+  root_folder_path    = coalesce(local.root_folder_cleaned, "atomity-exports")
 }
 
 # ---------------------------------------------------------------------------
@@ -88,6 +90,12 @@ resource "azurerm_role_assignment" "reader" {
   # The Service Principal was only just created, so Entra may not have
   # replicated it yet. Skipping the lookup avoids spurious "not found" errors.
   skip_service_principal_aad_check = true
+
+  lifecycle {
+    # Only used when the assignment is created. Azure never returns it, so an imported
+    # assignment would show a change that this resource cannot apply ("doesn't support update").
+    ignore_changes = [skip_service_principal_aad_check]
+  }
 }
 
 data "azurerm_resources" "storage" {
@@ -113,6 +121,9 @@ resource "azurerm_role_assignment" "storage_blob_reader" {
   skip_service_principal_aad_check = true
 
   lifecycle {
+    # See the note on the Reader assignment above.
+    ignore_changes = [skip_service_principal_aad_check]
+
     precondition {
       condition     = endswith(lower(local.storage_account_id), lower("/storageAccounts/${var.storage_account_name}"))
       error_message = "storage_account_id does not point at storage account '${var.storage_account_name}'."
@@ -176,7 +187,7 @@ resource "azapi_resource" "focus_export" {
           type           = "AzureBlob"
           resourceId     = local.storage_account_id
           container      = var.container_name
-          rootFolderPath = local.root_folder_path # null is omitted
+          rootFolderPath = local.root_folder_path
         }
       }
 

@@ -71,7 +71,7 @@ Options (apply and plan)
   --management-group-id ID   Root management group ID (scope management-group)
   --subscription-ids A,B     Subscriptions to grant Reader on (scope subscription).
                              Leave empty to let Atomity auto-discover.
-  --root-folder PATH         Optional folder inside the container
+  --root-folder PATH         Folder inside the container (default: atomity-exports)
   --storage-subscription ID  Subscription that holds the storage account, if it
                              is not the Cloud Shell default
   --storage-account-id ID    Full resource ID of the storage account, if needed
