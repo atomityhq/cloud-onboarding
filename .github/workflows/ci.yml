@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_call: # also called by release.yml, so a tag can't ship without a green CI run
 
 permissions:
