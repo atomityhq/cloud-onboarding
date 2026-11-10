@@ -18,7 +18,8 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 MODULE_DIR=${MODULE_DIR:-$HERE/..}
 ROOT=$(mktemp -d)
-trap 'rm -rf "$ROOT"' EXIT
+SRV_PID=""
+trap 'rm -rf "$ROOT"; if [[ -n "$SRV_PID" ]]; then kill "$SRV_PID" 2>/dev/null; fi' EXIT
 
 PASS=0
 FAIL=0
@@ -29,7 +30,7 @@ check() { if eval "$2"; then ok "$1"; else bad "$1" "${3:-}"; fi; }
 [[ -f "$MODULE_DIR/main.tf" ]] || { echo "No module found in $MODULE_DIR"; exit 2; }
 
 # ---------------------------------------------------------------- environment
-mkdir -p "$ROOT/bin" "$ROOT/home" "$ROOT/rel/azure-tf-v9.9.9"
+mkdir -p "$ROOT/bin" "$ROOT/home" "$ROOT/rel"
 export PATH="$ROOT/bin:$PATH"
 export HOME="$ROOT/home" MOCK_LOG="$ROOT/log"
 export ATOMITY_RELEASES_BASE="file://$ROOT/rel" ATOMITY_WORKDIR="$ROOT/work"
@@ -67,19 +68,30 @@ esac
 MOCK
 chmod +x "$ROOT/bin/az" "$ROOT/bin/terraform"
 
-# A fake Terraform release made from the real module, then the script built against it.
-python3 - "$MODULE_DIR" "$ROOT/rel/azure-tf-v9.9.9/azure-tf-v9.9.9.zip" <<'PY'
+# Three fake Terraform releases made from the real module. Each carries a marker file, so a test
+# can tell which one was installed. 9.10.0 is newest by version but sorts before 9.9.x as text.
+mkrel() {
+  mkdir -p "$ROOT/rel/$1"
+  python3 - "$MODULE_DIR" "$ROOT/rel/$1/$1.zip" "$1" <<'PY'
 import sys, zipfile, glob, os
-src, dst = sys.argv[1:3]
+src, dst, tag = sys.argv[1:4]
 with zipfile.ZipFile(dst, "w") as z:
     for f in sorted(glob.glob(os.path.join(src, "*.tf"))):
         z.write(f, os.path.basename(f))
+    z.writestr("marker.tf", f"# {tag}\n")
 PY
-python3 "$HERE/build.py" --tf-tag azure-tf-v9.9.9 --version 1.2.3 \
-  --zip "$ROOT/rel/azure-tf-v9.9.9/azure-tf-v9.9.9.zip" --out "$ROOT/dist" >/dev/null || { echo "build.py failed"; exit 2; }
+}
+TAG_LO=azure-tf-v9.9.8; TAG_MID=azure-tf-v9.9.9; TAG_HI=azure-tf-v9.10.0
+for t in $TAG_LO $TAG_MID $TAG_HI; do mkrel "$t"; done
+zipof() { echo "$ROOT/rel/$1/$1.zip"; }
+# pinned out of order on purpose: the script must still treat 9.10.0 as the newest
+python3 "$HERE/build.py" --version 1.2.3 --tf-tags "$TAG_MID,$TAG_HI,$TAG_LO" \
+  --zip "$TAG_LO=$(zipof $TAG_LO)" --zip "$TAG_MID=$(zipof $TAG_MID)" --zip "$TAG_HI=$(zipof $TAG_HI)" \
+  --out "$ROOT/dist" >/dev/null || { echo "build.py failed"; exit 2; }
 S="$ROOT/dist/atomity-azure.sh"
 SRC="$HERE/atomity-azure.sh"
-ZIP="$ROOT/rel/azure-tf-v9.9.9/azure-tf-v9.9.9.zip"
+ZIP=$(zipof $TAG_HI)
+marker() { tr -d '\n' < "$ROOT/work/marker.tf" 2>/dev/null; }
 
 T=8d65815f-a5b6-402f-9298-045155da7d74
 BASE=(--tenant-id "$T" --storage-account acmebilling --container atomity-focus --billing-account 1234567)
@@ -122,23 +134,41 @@ if command -v shellcheck >/dev/null 2>&1; then
 else
   echo "SKIP  shellcheck not installed"
 fi
-check "source has the three placeholders" \
-  'grep -q "@@SCRIPT_VERSION@@" "$SRC" && grep -q "@@TF_TAG@@" "$SRC" && grep -q "@@TF_SHA256@@" "$SRC"'
+check "source has the two placeholders" \
+  'grep -q "@@SCRIPT_VERSION@@" "$SRC" && grep -q "@@PINNED_MODULES@@" "$SRC"'
 check "built script has none left" \
-  '! grep -qE "@@(SCRIPT_VERSION|TF_TAG|TF_SHA256)@@" "$S"'
+  '! grep -qE "@@(SCRIPT_VERSION|PINNED_MODULES)@@" "$S"'
 check "built script checksum file verifies" '(cd "$ROOT/dist" && sha256sum -c atomity-azure.sh.sha256 >/dev/null 2>&1)'
-run python3 "$HERE/build.py" --tf-tag v1 --version 1.0.0 --zip "$ZIP" --out "$ROOT/x"
-check "build.py rejects a bad --tf-tag" '[[ $rc -ne 0 ]] && has "azure-tf-vX.Y.Z"'
-run python3 "$HERE/build.py" --tf-tag azure-tf-v1.0.0 --version 1.0 --zip "$ZIP" --out "$ROOT/x"
+run python3 "$HERE/build.py" --tf-tags v1 --version 1.0.0 --out "$ROOT/x"
+check "build.py rejects a bad tag" '[[ $rc -ne 0 ]] && has "azure-tf-vX.Y.Z"'
+run python3 "$HERE/build.py" --tf-tags azure-tf-v1.0.0 --version 1.0 --out "$ROOT/x"
 check "build.py rejects a bad --version" '[[ $rc -ne 0 ]] && has "X.Y.Z"'
 
-run python3 "$HERE/build.py" --version 1.0.0 --zip "$ZIP" --out "$ROOT/x"
-check "build.py reads the pinned tag from TERRAFORM_TAG" 'has "Terraform pin  : $(tr -d "\n" < "$HERE/TERRAFORM_TAG")"'
+pin_zips=(); while read -r t; do pin_zips+=(--zip "$t=$ZIP"); done < <(grep -vE '^[[:space:]]*(#|$)' "$HERE/TERRAFORM_TAGS")
+run python3 "$HERE/build.py" --version 1.0.0 "${pin_zips[@]}" --out "$ROOT/x"
+check "build.py reads the pins from TERRAFORM_TAGS" 'has "Terraform pin  : $(grep -vE "^[[:space:]]*(#|$)" "$HERE/TERRAFORM_TAGS" | sed -n 1p)"'
+
+check "stamped pins are newest first by version number" 'grep -q "^PINNED_MODULES=\"$TAG_HI " "$S"'
+run python3 "$HERE/build.py" --version 1.0.0 --tf-tags "$TAG_HI,$TAG_HI" --out "$ROOT/x"
+check "build.py rejects duplicate tags" '[[ $rc -ne 0 ]] && has "Duplicate"'
+run python3 "$HERE/build.py" --version 1.0.0 --tf-tags "$TAG_HI" --zip "azure-tf-v0.0.1=$ZIP" --out "$ROOT/x"
+check "build.py rejects a --zip for a tag that is not pinned" '[[ $rc -ne 0 ]] && has "must be TAG=PATH"'
+mkdir -p "$ROOT/bt" && cp "$HERE/build.py" "$HERE/atomity-azure.sh" "$ROOT/bt/"
+run python3 "$ROOT/bt/build.py" --version 1.0.0 --out "$ROOT/x"
+check "build.py without TERRAFORM_TAGS or --tf-tags says what to do" '[[ $rc -ne 0 ]] && has "TERRAFORM_TAGS"'
+printf '# only a comment\n\n' > "$ROOT/bt/TERRAFORM_TAGS"
+run python3 "$ROOT/bt/build.py" --version 1.0.0 --out "$ROOT/x"
+check "build.py with an empty pin file refuses" '[[ $rc -ne 0 ]] && has "No Terraform releases to pin"'
+printf '# comment\n\n%s\n  %s  \n' "$TAG_LO" "$TAG_HI" > "$ROOT/bt/TERRAFORM_TAGS"
+run python3 "$ROOT/bt/build.py" --version 1.0.0 --zip "$TAG_LO=$ZIP" --zip "$TAG_HI=$ZIP" --out "$ROOT/x"
+check "build.py ignores comments and blank lines and trims spaces" '[[ $rc -eq 0 ]] && has "$TAG_LO" && has "$TAG_HI"'
 
 # ---------------------------------------------------------------- arguments
 echo "## arguments and validation"
 reset
-run bash "$S" --version;                                         check "--version" 'has "atomity-azure.sh 1.2.3 (Terraform module azure-tf-v9.9.9)"'
+run bash "$S" --version
+check "--version names the default release" 'has "atomity-azure.sh 1.2.3 (default Terraform module azure-tf-v9.10.0)"'
+check "--version lists every pin, newest first by version number" 'has "Pinned Terraform modules: azure-tf-v9.10.0 azure-tf-v9.9.9 azure-tf-v9.9.8"'
 run bash "$S" frobnicate;                                        check "unknown command" 'has "Unknown command: frobnicate"'
 run bash "$S" plan --bogus;                                      check "unknown option" 'has "Unknown option: --bogus"'
 run bash "$S" plan --storage-account a --container c --billing-account 1
@@ -226,12 +256,13 @@ check "omitted --subscription-ids value does not eat the next flag" 'grep -q "su
 echo "## download and integrity"
 reset; cp "$ZIP" "$ZIP.orig"; printf 'tampered' >> "$ZIP"
 run bash "$S" apply "${BASE[@]}" --management-group-id "$T" --yes
-check "tampered archive rejected" 'has "Checksum mismatch for azure-tf-v9.9.9"'
+check "tampered archive rejected" 'has "Checksum mismatch for $TAG_HI"'
+check "tampered newest release: no fallback to an older one" '! has "Trying the next" && ! has "Downloading $TAG_MID"'
 check "nothing but the version check ran" '[[ "$(calls)" == "terraform version;" ]]' "$(calls)"
 check "no module files installed" '[[ -z "$(ls "$ROOT"/work/*.tf 2>/dev/null)" ]]'
 mv "$ZIP.orig" "$ZIP"
 reset; ATOMITY_RELEASES_BASE=file:///nonexistent run bash "$S" apply "${BASE[@]}" --management-group-id "$T" --yes
-check "failed download reported" 'has "Could not download"'
+check "every pinned release missing: clear error" 'has "None of the pinned Terraform releases could be downloaded"'
 reset; run bash "$SRC" apply "${BASE[@]}" --management-group-id "$T" --yes
 check "unstamped development copy refuses to download" 'has "This is a development copy of the script"'
 reset; run bash "$SRC" plan "${BASE[@]}" --management-group-id "$T" --module-dir "$MODULE_DIR"
@@ -239,18 +270,117 @@ check "--module-dir works for a development copy" 'has "Development mode" && has
 run bash "$SRC" plan "${BASE[@]}" --management-group-id "$T" --module-dir /tmp
 check "--module-dir without main.tf rejected" 'has "No main.tf in /tmp"'
 
-mkdir -p "$ROOT/nested/azure" "$ROOT/rel2/azure-tf-v9.9.9"
+mkdir -p "$ROOT/nested/azure" "$ROOT/rel2/$TAG_MID"
 cp "$MODULE_DIR"/*.tf "$ROOT/nested/azure/"
-python3 - "$ROOT/nested" "$ROOT/rel2/azure-tf-v9.9.9/azure-tf-v9.9.9.zip" <<'PY'
+python3 - "$ROOT/nested" "$ROOT/rel2/$TAG_MID/$TAG_MID.zip" <<'PY'
 import sys, zipfile, glob, os
 base, dst = sys.argv[1:3]
 with zipfile.ZipFile(dst, "w") as z:
     for f in sorted(glob.glob(os.path.join(base, "azure", "*.tf"))):
         z.write(f, os.path.join("azure", os.path.basename(f)))
 PY
-python3 "$HERE/build.py" --tf-tag azure-tf-v9.9.9 --version 1.2.3 --zip "$ROOT/rel2/azure-tf-v9.9.9/azure-tf-v9.9.9.zip" --out "$ROOT/dist2" >/dev/null
+python3 "$HERE/build.py" --tf-tags "$TAG_MID" --version 1.2.3 --zip "$TAG_MID=$ROOT/rel2/$TAG_MID/$TAG_MID.zip" --out "$ROOT/dist2" >/dev/null
 reset; ATOMITY_RELEASES_BASE="file://$ROOT/rel2" run bash "$ROOT/dist2/atomity-azure.sh" plan "${BASE[@]}" --management-group-id "$T"
 check "module inside a top-level folder of the archive" 'has "Plan: 5 to add"'
+
+# ---------------------------------------------------------------- several pins
+echo "## several pinned releases"
+gone() { mv "$ROOT/rel/$1" "$ROOT/gone_$1"; }
+back() { mv "$ROOT/gone_$1" "$ROOT/rel/$1"; }
+PLAN=(plan "${BASE[@]}" --management-group-id "$T")
+
+reset; run bash "$S" "${PLAN[@]}"
+check "default runs the newest pin by version (9.10.0, not 9.9.9)" '[[ "$(marker)" == "# $TAG_HI" ]] && has "Downloading $TAG_HI"' "marker=$(marker)"
+check "default does not download the older pins" '! has "Downloading $TAG_MID" && ! has "Downloading $TAG_LO"'
+
+reset; run bash "$S" "${PLAN[@]}" --module-tag "$TAG_LO"
+check "--module-tag runs an older pinned release" '[[ "$(marker)" == "# $TAG_LO" ]] && ! has "Downloading $TAG_HI"' "marker=$(marker)"
+reset; run bash "$S" "${PLAN[@]}" --module-tag azure-tf-v0.0.1
+check "--module-tag outside the pinned list is refused, with the list" '[[ $rc -ne 0 ]] && has "not one of this script" && has "$TAG_HI $TAG_MID $TAG_LO"'
+check "a refused --module-tag downloads and runs nothing" '! logged "init|plan" && ! has "Downloading"'
+run bash "$S" "${PLAN[@]}" --module-tag
+check "--module-tag needs a value" 'has "Option --module-tag needs a value"'
+run bash "$SRC" plan "${BASE[@]}" --management-group-id "$T" --module-dir "$MODULE_DIR" --module-tag "$TAG_LO"
+check "--module-dir and --module-tag cannot be combined" 'has "either --module-dir or --module-tag"'
+sed -E "s/^($TAG_MID) [0-9a-f]{64}/\1 notahash/" "$S" > "$ROOT/damaged.sh"
+run bash "$ROOT/damaged.sh" "${PLAN[@]}"
+check "a hand-damaged pin list is refused" 'has "damaged list of Terraform releases"'
+
+echo "## fallback only when a release is gone"
+gone "$TAG_HI"; reset; run bash "$S" "${PLAN[@]}"
+check "newest removed: falls back to the next pin with a warning" \
+  '[[ "$(marker)" == "# $TAG_MID" ]] && has "$TAG_HI is no longer available" && has "using $TAG_MID because $TAG_HI is unavailable"' "marker=$(marker)"
+gone "$TAG_MID"; reset; run bash "$S" "${PLAN[@]}"
+check "two removed: falls back to the oldest" '[[ "$(marker)" == "# $TAG_LO" ]]' "marker=$(marker)"
+gone "$TAG_LO"; reset; run bash "$S" "${PLAN[@]}"
+check "all removed: stops, naming every release it tried" '[[ $rc -ne 0 ]] && has "None of the pinned Terraform releases could be downloaded" && has "$TAG_HI" && has "$TAG_LO"'
+back "$TAG_MID"; back "$TAG_LO"
+reset; run bash "$S" "${PLAN[@]}" --module-tag "$TAG_HI"
+check "an explicit --module-tag that is gone does not fall back" '[[ $rc -ne 0 ]] && has "$TAG_HI could not be found" && ! has "Downloading $TAG_MID"'
+back "$TAG_HI"
+
+# Real HTTP status codes, so the decision is tested on curl's own status-code path.
+cat > "$ROOT/serve.py" <<'PY'
+import http.server, json, os, sys
+root, codes_path, port_path = sys.argv[1:4]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        parts = self.path.strip("/").split("/")
+        code = json.load(open(codes_path)).get(parts[0])
+        if code and code != 200:
+            self.send_response(code); self.end_headers(); return
+        f = os.path.join(root, *parts)
+        if os.path.isfile(f):
+            data = open(f, "rb").read()
+            self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+        else:
+            self.send_response(404); self.end_headers()
+    def log_message(self, *a): pass
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(port_path, "w").write(str(srv.server_address[1]))
+srv.serve_forever()
+PY
+echo '{}' > "$ROOT/codes.json"
+python3 "$ROOT/serve.py" "$ROOT/rel" "$ROOT/codes.json" "$ROOT/port" & SRV_PID=$!
+for _ in $(seq 1 50); do [[ -s "$ROOT/port" ]] && break; sleep 0.1; done
+HTTP="http://127.0.0.1:$(cat "$ROOT/port")"
+setcode() { printf '{"%s": %s}' "$1" "$2" > "$ROOT/codes.json"; }
+for code in 404 410; do
+  setcode "$TAG_HI" $code; reset; ATOMITY_RELEASES_BASE=$HTTP run bash "$S" "${PLAN[@]}"
+  check "HTTP $code on the newest: falls back to the next pin" '[[ "$(marker)" == "# $TAG_MID" ]]' "marker=$(marker) $out"
+done
+for code in 403 500 503; do
+  setcode "$TAG_HI" $code; reset; ATOMITY_RELEASES_BASE=$HTTP run bash "$S" "${PLAN[@]}"
+  check "HTTP $code on the newest: stops, does not fall back" '[[ $rc -ne 0 ]] && has "Could not download" && ! has "Trying the next" && ! has "Downloading $TAG_MID"' "$out"
+done
+echo '{}' > "$ROOT/codes.json"; reset; ATOMITY_RELEASES_BASE=$HTTP run bash "$S" "${PLAN[@]}"
+check "HTTP 200 works the same as file://" '[[ "$(marker)" == "# $TAG_HI" ]]'
+reset; ATOMITY_RELEASES_BASE=http://127.0.0.1:1 run bash "$S" "${PLAN[@]}"
+check "network error: stops, does not fall back" '[[ $rc -ne 0 ]] && has "Could not download" && ! has "Trying the next"'
+
+echo "## remove uses the release that created the connection"
+reset; bash "$S" "${PLAN[@]/plan/apply}" --module-tag "$TAG_LO" --yes >/dev/null 2>&1
+check "apply records the release it used" '[[ "$(cat "$ROOT/work/.atomity-module")" == "$TAG_LO" ]]' "$(cat "$ROOT/work/.atomity-module" 2>/dev/null)"
+run bash "$S" remove --yes
+check "remove picks that release, not the newest" 'has "Downloading $TAG_LO" && ! has "Downloading $TAG_HI" && has "are removed."'
+
+reset; bash "$S" apply "${BASE[@]}" --management-group-id "$T" --module-tag "$TAG_LO" --yes >/dev/null 2>&1
+bash "$S" apply "${BASE[@]}" --management-group-id "$T" --yes >/dev/null 2>&1
+check "applying again without --module-tag moves to the newest and records it" '[[ "$(cat "$ROOT/work/.atomity-module")" == "$TAG_HI" ]]'
+
+reset; bash "$S" "${PLAN[@]/plan/apply}" --module-tag "$TAG_LO" --yes >/dev/null 2>&1
+echo "azure-tf-v0.0.1" > "$ROOT/work/.atomity-module"
+run bash "$S" remove --yes
+check "recorded release no longer included: says so and uses the newest" 'has "no longer includes" && has "Downloading $TAG_HI" && has "are removed."' "$out"
+
+reset; bash "$S" "${PLAN[@]/plan/apply}" --module-tag "$TAG_LO" --yes >/dev/null 2>&1
+gone "$TAG_LO"
+run bash "$S" remove --yes
+check "recorded release removed from GitHub: falls back and still removes" 'has "$TAG_LO is no longer available" && has "Downloading $TAG_HI" && has "are removed."' "$out"
+back "$TAG_LO"
+
+reset; run bash "$S" "${PLAN[@]}"
+check "plan never records a release (nothing was created)" '[[ ! -f "$ROOT/work/.atomity-module" ]]'
 
 # ---------------------------------------------------------------- re-run, safety
 echo "## re-run and safety"

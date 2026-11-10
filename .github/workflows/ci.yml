@@ -203,10 +203,21 @@ jobs:
             echo "::group::$d"
             shellcheck "$d"/*.sh || fail=1
             python3 -m py_compile "$d/build.py" || fail=1
-            # the pin must be a Terraform release tag of the same cloud
-            if ! grep -Eqx "$(dirname "$d")-tf-v[0-9]+\.[0-9]+\.[0-9]+" "$d/TERRAFORM_TAG"; then
-              echo "::error::$d/TERRAFORM_TAG must contain one tag like $(dirname "$d")-tf-v1.0.0"
+            # the pins must be Terraform release tags of the same cloud, listed once each
+            cloud=$(dirname "$d")
+            pins=$(grep -vE '^[[:space:]]*(#|$)' "$d/TERRAFORM_TAGS" || true)
+            if [ -z "$pins" ]; then
+              echo "::error::$d/TERRAFORM_TAGS must list at least one tag like ${cloud}-tf-v1.0.0"
               fail=1
+            else
+              if echo "$pins" | grep -Evx "${cloud}-tf-v[0-9]+\.[0-9]+\.[0-9]+"; then
+                echo "::error::$d/TERRAFORM_TAGS has lines that are not ${cloud}-tf-vX.Y.Z tags (shown above)"
+                fail=1
+              fi
+              if [ -n "$(echo "$pins" | sort | uniq -d)" ]; then
+                echo "::error::$d/TERRAFORM_TAGS lists a tag more than once"
+                fail=1
+              fi
             fi
             bash "$t" || fail=1
             echo "::endgroup::"

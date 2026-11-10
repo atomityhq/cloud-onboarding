@@ -15,10 +15,11 @@ set -euo pipefail
 # Stamped at release time by build.py. A copy that still has the placeholders
 # is a development copy and refuses to download anything.
 SCRIPT_VERSION="@@SCRIPT_VERSION@@"
-TF_TAG="@@TF_TAG@@"
-TF_SHA256="@@TF_SHA256@@"
+# The Terraform releases this script may run, one "tag sha256" per line. The newest
+# is used by default. Every one can be chosen with --module-tag.
+PINNED_MODULES="@@PINNED_MODULES@@"
 
-RELEASES_BASE="${ATOMITY_RELEASES_BASE:-https://github.com/atomity/cloud-onboarding/releases/download}"
+RELEASES_BASE="${ATOMITY_RELEASES_BASE:-https://github.com/atomity/terraform-onboarding/releases/download}"
 # $HOME is persistent in Cloud Shell, so the Terraform state survives sessions.
 WORKDIR="${ATOMITY_WORKDIR:-$HOME/atomity-azure}"
 MIN_TERRAFORM="1.5.7"
@@ -36,6 +37,11 @@ ROOT_FOLDER=""
 STORAGE_SUBSCRIPTION=""
 STORAGE_ACCOUNT_ID=""
 MODULE_DIR=""
+MODULE_TAG=""
+USED_TAG=""
+MODULE_RECORD=".atomity-module"   # which pinned release created the state, kept for remove
+MOD_TAGS=()
+MOD_SHAS=()
 ASSUME_YES=0
 TMP=""
 SHIFT=1
@@ -72,8 +78,10 @@ Options (apply and plan)
 
 General
   --yes                      Skip the confirmation prompt
+  --module-tag TAG           Run this pinned Terraform release instead of the newest one.
+                             --version lists the releases this script includes.
   --module-dir DIR           Development only: use a local copy of the module
-  --version                  Print the script and module versions
+  --version                  Print the script version and its pinned Terraform releases
   -h, --help                 Show this help
 USAGE
 }
@@ -99,6 +107,71 @@ safe() {
 # pipe early can make the producer die with SIGPIPE.
 version_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | sed -n '1p')" == "$2" ]]; }
 
+# Reads PINNED_MODULES into MOD_TAGS and MOD_SHAS, newest first. The order is decided here by
+# version number (1.10.0 is newer than 1.9.0), not by the order they were stamped in.
+load_pins() {
+  [[ "$PINNED_MODULES" != @@* ]] || return 0
+  local tag sha
+  while read -r tag sha; do
+    [[ -n "$tag" ]] || continue
+    if [[ ! "$tag" =~ ^[a-z]+-tf-v[0-9]+\.[0-9]+\.[0-9]+$ || ! "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+      die "This copy of the script has a damaged list of Terraform releases. Download it again."
+    fi
+    MOD_TAGS+=("$tag")
+    MOD_SHAS+=("$sha")
+  done < <(printf '%s\n' "$PINNED_MODULES" | awk 'NF { v=$1; sub(/^.*-v/, "", v); print v, $1, $2 }' | sort -rV | awk '{ print $2, $3 }')
+}
+
+print_version() {
+  if [[ ${#MOD_TAGS[@]} -gt 0 ]]; then
+    info "atomity-azure.sh ${SCRIPT_VERSION} (default Terraform module ${MOD_TAGS[0]})"
+    info "Pinned Terraform modules: ${MOD_TAGS[*]}"
+  else
+    info "atomity-azure.sh ${SCRIPT_VERSION} (development copy, no pinned Terraform modules)"
+  fi
+}
+
+pin_sha() {
+  local i
+  for i in "${!MOD_TAGS[@]}"; do
+    if [[ "${MOD_TAGS[$i]}" == "$1" ]]; then printf '%s' "${MOD_SHAS[$i]}"; return 0; fi
+  done
+  return 1
+}
+
+# The releases to try, in order. --module-tag means exactly that one. Otherwise the newest
+# first. For remove, the release that created the state goes first, because a newer module
+# may expect inputs the saved settings do not have.
+module_candidates() {
+  local i recorded="" t
+  if [[ -n "$MODULE_TAG" ]]; then printf '%s\n' "$MODULE_TAG"; return 0; fi
+  if [[ "$CMD" == "remove" && -f "$WORKDIR/$MODULE_RECORD" ]]; then
+    recorded=$(sed -n '1p' "$WORKDIR/$MODULE_RECORD")
+  fi
+  if [[ -n "$recorded" ]] && pin_sha "$recorded" >/dev/null; then printf '%s\n' "$recorded"; fi
+  for i in "${!MOD_TAGS[@]}"; do
+    t=${MOD_TAGS[$i]}
+    if [[ "$t" != "$recorded" ]]; then printf '%s\n' "$t"; fi
+  done
+}
+
+# Downloads one pinned release into $TMP/module.zip and verifies it.
+# Returns 1 if the release no longer exists (404 or 410). Stops the script on a checksum
+# mismatch or on any other download error: those must never fall back to another version.
+download_module() {
+  local tag=$1 want=$2 url="$RELEASES_BASE/$1/$1.zip" code rc=0 actual
+  code=$(curl -fsSL -o "$TMP/module.zip" -w '%{http_code}' "$url" 2>"$TMP/curl.err") || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    # 22: HTTP error, where 404 and 410 mean the release is gone. 37: file not found (tests).
+    if [[ $rc -eq 37 || ( $rc -eq 22 && ( "$code" == "404" || "$code" == "410" ) ) ]]; then return 1; fi
+    die "Could not download $url: $(tr '\n' ' ' < "$TMP/curl.err")"
+  fi
+  actual=$(sha256sum "$TMP/module.zip" | awk '{print $1}')
+  [[ "$actual" == "$want" ]] \
+    || die "Checksum mismatch for $tag. Expected $want but got $actual. The release was changed after this script was built, so nothing was changed and no other version was tried."
+  return 0
+}
+
 parse_args() {
   if [[ $# -gt 0 && "$1" != -* ]]; then CMD=$1; shift; fi
   case "$CMD" in
@@ -118,9 +191,10 @@ parse_args() {
       --root-folder)          optional_value "$@"; ROOT_FOLDER=$OPTVAL; shift "$SHIFT" ;;
       --storage-subscription) need_value "$@"; STORAGE_SUBSCRIPTION=$2; shift 2 ;;
       --storage-account-id)   need_value "$@"; STORAGE_ACCOUNT_ID=$2; shift 2 ;;
+      --module-tag)           need_value "$@"; MODULE_TAG=$2; shift 2 ;;
       --module-dir)           need_value "$@"; MODULE_DIR=$2; shift 2 ;;
       --yes|-y)               ASSUME_YES=1; shift ;;
-      --version)              info "atomity-azure.sh ${SCRIPT_VERSION} (Terraform module ${TF_TAG})"; exit 0 ;;
+      --version)              print_version; exit 0 ;;
       -h|--help)              usage; exit 0 ;;
       *) usage >&2; die "Unknown option: $1" ;;
     esac
@@ -224,15 +298,28 @@ fetch_module() {
     [[ -f "$MODULE_DIR/main.tf" ]] || die "No main.tf in $MODULE_DIR."
     src=$MODULE_DIR
   else
-    if [[ "$TF_SHA256" == @@* || "$TF_TAG" == @@* ]]; then
+    if [[ ${#MOD_TAGS[@]} -eq 0 ]]; then
       die "This is a development copy of the script. Download the released script from the onboarding wizard."
     fi
-    local url="$RELEASES_BASE/$TF_TAG/$TF_TAG.zip" actual main
-    info "Downloading $TF_TAG"
-    curl -fsSL "$url" -o "$TMP/module.zip" || die "Could not download $url"
-    actual=$(sha256sum "$TMP/module.zip" | awk '{print $1}')
-    [[ "$actual" == "$TF_SHA256" ]] \
-      || die "Checksum mismatch for $TF_TAG. Expected $TF_SHA256 but got $actual. Nothing was changed."
+    local cand sha first="" tried="" main recorded=""
+    if [[ "$CMD" == "remove" && -z "$MODULE_TAG" && -f "$WORKDIR/$MODULE_RECORD" ]]; then
+      recorded=$(sed -n '1p' "$WORKDIR/$MODULE_RECORD")
+      if [[ -n "$recorded" ]] && ! pin_sha "$recorded" >/dev/null; then
+        info "This connection was created with $recorded, which this script no longer includes. Using the newest included release instead."
+      fi
+    fi
+    while read -r cand; do
+      [[ -n "$cand" ]] || continue
+      sha=$(pin_sha "$cand") || die "$cand is not one of this script's pinned Terraform releases. Available: ${MOD_TAGS[*]}"
+      if [[ -z "$first" ]]; then first=$cand; fi
+      info "Downloading $cand"
+      if download_module "$cand" "$sha"; then USED_TAG=$cand; break; fi
+      tried="$tried $cand"
+      if [[ -n "$MODULE_TAG" ]]; then die "$cand could not be found. It may have been removed."; fi
+      info "Warning: $cand is no longer available. Trying the next pinned release."
+    done < <(module_candidates)
+    [[ -n "$USED_TAG" ]] || die "None of the pinned Terraform releases could be downloaded:$tried"
+    if [[ "$USED_TAG" != "$first" ]]; then info "Warning: using $USED_TAG because $first is unavailable."; fi
     info "Checksum verified."
     mkdir "$TMP/x"
     unzip -q "$TMP/module.zip" -d "$TMP/x"
@@ -284,6 +371,7 @@ do_apply() {
   fi
   step "Applying"
   (cd "$WORKDIR" && terraform apply -input=false tfplan)
+  if [[ -n "$USED_TAG" ]]; then printf '%s\n' "$USED_TAG" > "$WORKDIR/$MODULE_RECORD"; fi
   step "Done"
   (cd "$WORKDIR" && terraform output connection_details)
   info
@@ -329,7 +417,9 @@ do_remove() {
 }
 
 main() {
+  load_pins
   parse_args "$@"
+  if [[ -n "$MODULE_DIR" && -n "$MODULE_TAG" ]]; then die "Use either --module-dir or --module-tag, not both."; fi
   # The working directory is wiped of *.tf files on every run and deleted by
   # remove, so it must never be the home directory or the root.
   if [[ -z "$WORKDIR" || "$WORKDIR" == "/" || "$WORKDIR" == "$HOME" || "$WORKDIR" == "$HOME/" ]]; then
