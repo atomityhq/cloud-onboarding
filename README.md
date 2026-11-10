@@ -19,22 +19,22 @@ Terraform can fetch and initialize the module in one step. For example:
 
 ```bash
 mkdir atomity-aws && cd atomity-aws
-terraform init -from-module="https://github.com/atomity/terraform-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip"
+terraform init -from-module="https://github.com/atomity/cloud-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip"
 ```
 
 For Azure, use the `azure-tf` release in the same way:
 
 ```bash
 mkdir atomity-azure && cd atomity-azure
-terraform init -from-module="https://github.com/atomity/terraform-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
+terraform init -from-module="https://github.com/atomity/cloud-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
 ```
 
 See the cloud's own README for inputs and the full command list. Prefer to
 inspect the code first?
 
 ```bash
-curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip
-curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip.sha256
+curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip
+curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip.sha256
 sha256sum -c aws-tf-v1.0.0.zip.sha256
 unzip aws-tf-v1.0.0.zip -d atomity-aws
 ```
@@ -42,7 +42,7 @@ unzip aws-tf-v1.0.0.zip -d atomity-aws
 Every release zip also carries a build-provenance attestation:
 
 ```bash
-gh attestation verify aws-tf-v1.0.0.zip --repo atomity/terraform-onboarding
+gh attestation verify aws-tf-v1.0.0.zip --repo atomity/cloud-onboarding
 ```
 
 ### CloudFormation
@@ -50,10 +50,10 @@ gh attestation verify aws-tf-v1.0.0.zip --repo atomity/terraform-onboarding
 The release is a single template, `atomity.yaml`:
 
 ```bash
-curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-cfn-v1.0.0/atomity.yaml
-curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-cfn-v1.0.0/atomity.yaml.sha256
+curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/aws-cfn-v1.0.0/atomity.yaml
+curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/aws-cfn-v1.0.0/atomity.yaml.sha256
 sha256sum -c atomity.yaml.sha256
-gh attestation verify atomity.yaml --repo atomity/terraform-onboarding
+gh attestation verify atomity.yaml --repo atomity/cloud-onboarding
 ```
 
 The cloud's own README has the deploy commands and parameters.
@@ -73,10 +73,10 @@ The wizard generates one command that downloads the script, checks its checksum,
 To inspect the script first:
 
 ```bash
-curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh
-curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh.sha256
+curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh
+curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh.sha256
 sha256sum -c atomity-azure.sh.sha256
-gh attestation verify atomity-azure.sh --repo atomity/terraform-onboarding
+gh attestation verify atomity-azure.sh --repo atomity/cloud-onboarding
 ```
 
 The script verifies the Terraform release it uses against a checksum built into it. The cloud's

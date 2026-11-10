@@ -28,7 +28,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SOURCE = HERE / "atomity-azure.sh"
 PIN_FILE = HERE / "TERRAFORM_TAGS"
-RELEASES = "https://github.com/atomity/terraform-onboarding/releases/download"
+RELEASES = "https://github.com/atomity/cloud-onboarding/releases/download"
 PLACEHOLDERS = ("@@SCRIPT_VERSION@@", "@@PINNED_MODULES@@")
 TAG_RE = re.compile(r"azure-tf-v(\d+)\.(\d+)\.(\d+)")
 
