@@ -290,6 +290,7 @@ Management export is then deleted in the portal, or it keeps writing files.
 | Billing data as a FOCUS Parquet export in the customer's own storage | An open standard, the data stays in the customer's tenant, and no extra analytics services are needed | CSV exports, the legacy usage details exports |
 | FOCUS 1.2 (`1.2-preview`) by default | The same schema as the AWS export, so one reader handles both clouds. Azure's FOCUS 1.2 is still a preview | FOCUS 1.0 or 1.0r2, which are generally available but a different schema |
 | The export is created at billing account scope | Azure does not support FOCUS exports at management group scope, and a billing account export covers every subscription under it | One export per subscription |
+| The export always writes into a folder, `atomity-exports` unless the customer chooses one | Azure rejects an export with no root folder, and the AWS export has the same default prefix | Writing at the container root, which the Cost Management API does not accept |
 | The customer supplies the storage account | The wizard asks for it, and the module never owns the customer's data store, so removal cannot delete billing data | The module creates the storage account, as it does the bucket on AWS. May be offered later |
 | The module never unregisters `Microsoft.CostManagementExports` | Other exports in the subscription may rely on it | `azurerm_resource_provider_registration`, which unregisters on destroy |
 | The export uses `azapi`, not `azurerm` | `azurerm` cannot create FOCUS exports | Waiting for `azurerm` support |
