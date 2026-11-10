@@ -1,6 +1,6 @@
 # Atomity cloud onboarding
 
-Terraform, CloudFormation and a Cloud Shell script that connect your cloud accounts to
+Automated setups that connect your cloud accounts to
 Atomity with read-only access. The Atomity onboarding wizard generates the exact commands for you.
 
 | Cloud | Directory | Setup methods | Status |
