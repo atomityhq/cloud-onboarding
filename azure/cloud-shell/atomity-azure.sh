@@ -19,7 +19,7 @@ SCRIPT_VERSION="@@SCRIPT_VERSION@@"
 # is used by default. Every one can be chosen with --module-tag.
 PINNED_MODULES="@@PINNED_MODULES@@"
 
-RELEASES_BASE="${ATOMITY_RELEASES_BASE:-https://github.com/atomity/cloud-onboarding/releases/download}"
+RELEASES_BASE="${ATOMITY_RELEASES_BASE:-https://github.com/atomityhq/cloud-onboarding/releases/download}"
 # $HOME is persistent in Cloud Shell, so the Terraform state survives sessions.
 WORKDIR="${ATOMITY_WORKDIR:-$HOME/atomity-azure}"
 MIN_TERRAFORM="1.5.7"

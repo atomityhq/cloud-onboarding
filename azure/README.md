@@ -59,7 +59,7 @@ The wizard generates these commands with your values filled in.
 
 ```bash
 mkdir atomity-azure && cd atomity-azure
-terraform init -from-module="https://github.com/atomity/cloud-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
+terraform init -from-module="https://github.com/atomityhq/cloud-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
 
 cat > terraform.tfvars <<'EOT'
 tenant_id            = "<your Entra tenant ID>"
@@ -127,7 +127,7 @@ until you type `yes`. It runs the newest Terraform release built into the script
 The wizard generates this command with your values filled in, including the script's checksum.
 
 ```bash
-curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh
+curl -fsSLO https://github.com/atomityhq/cloud-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh
 echo "<script checksum from the wizard>  atomity-azure.sh" | sha256sum -c - && bash atomity-azure.sh apply \
   --tenant-id "<your Entra tenant ID>" \
   --storage-account "<existing storage account>" \
@@ -206,5 +206,5 @@ delete the Service Principal under **Entra ID → Enterprise applications**.
 - With `scope_mode = "subscription"`, a subscription added later is not covered until you add it
   to `subscription_ids` and apply again.
 - Verify a download: compare it with the published `.sha256` file, or run
-  `gh attestation verify <file> --repo atomity/cloud-onboarding`.
+  `gh attestation verify <file> --repo atomityhq/cloud-onboarding`.
 - Azure is released as such: Terraform is on `azure-tf-vX.Y.Z` tags and the Cloud Shell script on `azure-shell-vX.Y.Z` tags. Each script release pins one or more Terraform releases and runs the newest by default.

@@ -56,7 +56,7 @@ The wizard generates these commands with your values filled in.
 
 ```bash
 mkdir atomity-aws && cd atomity-aws
-terraform init -from-module="https://github.com/atomity/cloud-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip"
+terraform init -from-module="https://github.com/atomityhq/cloud-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip"
 
 cat > terraform.tfvars <<'EOT'
 external_id = "<from the Atomity wizard>"
