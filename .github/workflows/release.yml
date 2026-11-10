@@ -18,6 +18,8 @@ on:
     tags:
       - "aws-tf-v[0-9]+.[0-9]+.[0-9]+"
       - "aws-cfn-v[0-9]+.[0-9]+.[0-9]+"
+      - "azure-tf-v[0-9]+.[0-9]+.[0-9]+"
+      - "azure-bicep-v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: read
@@ -177,4 +179,60 @@ jobs:
         run: |
           prev=$(git tag --list "${CLOUD}-cfn-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
           gh release create "$TAG" dist/atomity.yaml dist/atomity.yaml.sha256 \
+            --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag
+  bicep:
+    if: ${{ contains(github.ref_name, '-bicep-') }}
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve cloud from the tag
+        id: v
+        run: |
+          tag="$GITHUB_REF_NAME"
+          cloud="${tag%%-*}" # azure-bicep-v1.0.0 -> azure
+          if [ ! -f "$cloud/bicep/atomity.json" ]; then
+            echo "::error::Tag $tag has no template at '$cloud/bicep/atomity.json'"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "cloud=$cloud" >> "$GITHUB_OUTPUT"
+
+      - name: Tag must point at a commit on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main. Releases are cut from main only."
+            exit 1
+          fi
+
+      - name: Collect release artifacts (atomity.json and bicep zip)
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          mkdir dist
+          cp "${CLOUD}/bicep/atomity.json" dist/atomity.json
+          git archive --format=zip --output="dist/${TAG}-modules.zip" "${GITHUB_SHA}:${CLOUD}/bicep"
+          (cd dist && sha256sum atomity.json > atomity.json.sha256)
+          (cd dist && sha256sum "${TAG}-modules.zip" > "${TAG}-modules.zip.sha256")
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          prev=$(git tag --list "${CLOUD}-bicep-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
+          gh release create "$TAG" dist/atomity.json dist/atomity.json.sha256 "dist/${TAG}-modules.zip" "dist/${TAG}-modules.zip.sha256" \
             --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag

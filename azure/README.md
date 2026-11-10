@@ -18,6 +18,75 @@ grant inside your own tenant.
 
 Terraform does not create the storage account or the container. You bring the storage account,
 and Cost Management creates the container on the first run.
+## Choose a method
+| | Terraform | ARM / Deploy to Azure | Bicep Module |
+|---|---|---|---|
+| Best for | Teams that use Terraform for IaC | Teams that prefer the Azure Portal or CLI with no tools | Teams that standardize on Azure Bicep (CDK equivalent) |
+| Setup scope | Management group or Subscriptions | Management group (or Subscriptions) | Management group (or Subscriptions) |
+| Entra ID consent | Automated in run | Pre-step in wizard (provides SP Object ID) | Pre-step in wizard (provides SP Object ID) |
+| FOCUS export creation | Automated in run | Automated via Portal guide or companion template | Automated via Portal guide or companion module |
+| Preview before changes | `terraform plan` | Azure Portal Review / `what-if` | `az deployment mg what-if` |
+---
+## ARM Template / Deploy to Azure
+Our CloudFormation equivalent. One self-contained template (`bicep/atomity.json`) deploys at
+management group scope directly from the Azure Portal with the **Deploy to Azure** button.
+### 1. Click to Deploy
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fatomityhq%2Fcloud-onboarding%2Fmain%2Fazure%2Fbicep%2Fatomity.json)
+### Before you click
+1. Complete **Step 1 (Admin Consent)** in the onboarding wizard. This creates Atomity's Service Principal in your tenant.
+2. Obtain the Service Principal's Object ID in your tenant:
+   ```bash
+   az ad sp show --id c4b84012-e86e-4ea0-9c42-5e015c1c30f4 --query id -o tsv
+   ```
+3. Have your storage account name, resource group, and subscription ID ready.
+### Deploy via Azure CLI
+If you prefer the command line over the Azure Portal button:
+```bash
+az deployment mg create \
+  --name "atomity-onboarding" \
+  --management-group-id "<root-management-group-id>" \
+  --location eastus \
+  --template-file azure/bicep/atomity.json \
+  --parameters \
+    atomityServicePrincipalObjectId="<from Step 1 above>" \
+    storageAccountSubscriptionId="<subscription ID>" \
+    storageAccountResourceGroupName="<resource group name>" \
+    storageAccountName="<storage account name>"
+```
+### Parameters
+| Name | Default | Description |
+|---|---|---|
+| `atomityServicePrincipalObjectId` | none (required) | Object ID of Atomity's Service Principal in your tenant. |
+| `storageAccountSubscriptionId` | none (required) | Subscription ID where your billing export storage account is located. |
+| `storageAccountResourceGroupName` | none (required) | Resource group name of the storage account. |
+| `storageAccountName` | none (required) | Name of the storage account designated to receive the FOCUS export. |
+| `scopeMode` | `management_group` | `management_group` (recommended) or `subscription`. |
+| `subscriptionIds` | `[]` | List of subscription IDs if `scopeMode` is set to `subscription`. |
+---
+## Bicep
+Our AWS CDK equivalent, for teams that write Azure Bicep. Reference the module directly from
+your own Bicep infrastructure repository:
+```bicep
+targetScope = 'managementGroup'
+module atomityConnection 'bicep/main.bicep' = {
+  name: 'atomity-onboarding'
+  params: {
+    atomityServicePrincipalObjectId: '<SP_OBJECT_ID_FROM_STEP_1>'
+    storageAccountSubscriptionId: '<storage-account-subscription-id>'
+    storageAccountResourceGroupName: '<storage-account-resource-group>'
+    storageAccountName: '<storage-account-name>'
+  }
+}
+```
+Preview changes before deploying:
+```bash
+az deployment mg what-if \
+  --management-group-id "<root-management-group-id>" \
+  --location eastus \
+  --template-file main.bicep \
+  --parameters @parameters.json
+```
+---
 
 ## Terraform
 
@@ -96,6 +165,8 @@ subscription_ids = ["<subscription ID>", "<subscription ID>"]
 
 ## Remove Atomity's access
 
+### Terraform
+
 Run this from the folder you deployed from:
 
 ```bash
@@ -112,6 +183,12 @@ they stay in your subscription and continue to incur storage costs until you del
 Without Terraform, either remove the role assignments for Atomity's application ID
 (`c4b84012-e86e-4ea0-9c42-5e015c1c30f4`) from each scope and from the storage account, or
 delete the Service Principal under **Entra ID → Enterprise applications**.
+
+### ARM / Bicep
+Deleting an ARM/Bicep deployment record does not delete role assignments. To revoke access:
+1. Remove the role assignments for Atomity's Service Principal from the management group and storage account, **OR**
+2. Delete Atomity's Service Principal under **Microsoft Entra ID → Enterprise applications**. Access terminates immediately across all scopes.
+3. If you set up a Cost Management export, delete it in the Azure Portal under **Cost Management + Billing → Exports**.
 
 ## Notes
 

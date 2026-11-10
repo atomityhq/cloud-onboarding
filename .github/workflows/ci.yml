@@ -152,6 +152,25 @@ jobs:
           fi
           echo "$files"
           cfn-lint $files
+  # Azure Bicep & ARM templates. azure/bicep/atomity.json is checked for drift
+  # and validated against main.bicep.
+  bicep-check:
+    name: bicep-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Azure CLI / Bicep
+        run: az bicep install || true
+      - name: Validate Bicep definitions and ARM template drift
+        run: |
+          fail=0
+          for b in $(git ls-files '*/bicep/build.py'); do
+            python3 "$b" --check || fail=1
+          done
+          exit $fail
 
   # CDK users deploy the released CloudFormation template by importing it with CfnInclude.
   # This proves the committed atomity.yaml still imports and synthesizes, so we can keep
@@ -192,7 +211,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [hygiene, fmt, validate, tflint, cfn-lint, cdk-compat, checkov]
+    needs: [hygiene, fmt, validate, tflint, cfn-lint, bicep-check, cdk-compat, checkov]
     runs-on: ubuntu-latest
     steps:
       - env:

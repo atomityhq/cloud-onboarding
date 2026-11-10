@@ -1,0 +1,212 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-08-01/managementGroupDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.33.93"
+    },
+    "description": "Atomity read-only connection template for Azure (Management Group and Storage Account RBAC)"
+  },
+  "parameters": {
+    "atomityServicePrincipalObjectId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "metadata": {
+        "description": "Object ID of Atomity's Service Principal in your tenant (obtained after Step 1 admin consent)."
+      }
+    },
+    "storageAccountSubscriptionId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "metadata": {
+        "description": "Subscription ID where your billing export storage account is located."
+      }
+    },
+    "storageAccountResourceGroupName": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Resource group name where your billing export storage account is located."
+      }
+    },
+    "storageAccountName": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 24,
+      "metadata": {
+        "description": "Name of the existing storage account designated to receive the FOCUS cost export."
+      }
+    },
+    "scopeMode": {
+      "type": "string",
+      "defaultValue": "management_group",
+      "allowedValues": [
+        "management_group",
+        "subscription"
+      ],
+      "metadata": {
+        "description": "How inventory and metrics access is scoped: management_group (recommended) or subscription."
+      }
+    },
+    "subscriptionIds": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "List of subscription IDs to grant Reader on when scopeMode is 'subscription'."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[deployment().location]",
+      "metadata": {
+        "description": "Deployment location metadata."
+      }
+    }
+  },
+  "variables": {
+    "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
+    "storageBlobDataReaderRoleId": "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1"
+  },
+  "resources": [
+    {
+      "condition": "[equals(parameters('scopeMode'), 'management_group')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(managementGroup().id, parameters('atomityServicePrincipalObjectId'), variables('readerRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[tenantResourceId('Microsoft.Authorization/roleDefinitions', variables('readerRoleId'))]",
+        "principalId": "[parameters('atomityServicePrincipalObjectId')]",
+        "principalType": "ServicePrincipal",
+        "description": "Atomity read-only access for inventory, metrics, and recommendations across the management group."
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "atomity-storage-role-deployment",
+      "subscriptionId": "[parameters('storageAccountSubscriptionId')]",
+      "resourceGroup": "[parameters('storageAccountResourceGroupName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "mode": "Incremental",
+        "parameters": {
+          "atomityServicePrincipalObjectId": {
+            "value": "[parameters('atomityServicePrincipalObjectId')]"
+          },
+          "storageAccountName": {
+            "value": "[parameters('storageAccountName')]"
+          },
+          "storageBlobDataReaderRoleId": {
+            "value": "[variables('storageBlobDataReaderRoleId')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "atomityServicePrincipalObjectId": {
+              "type": "string"
+            },
+            "storageAccountName": {
+              "type": "string"
+            },
+            "storageBlobDataReaderRoleId": {
+              "type": "string"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Storage/storageAccounts/providers/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[format('{0}/Microsoft.Authorization/{1}', parameters('storageAccountName'), guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), parameters('atomityServicePrincipalObjectId'), parameters('storageBlobDataReaderRoleId')))]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', parameters('storageBlobDataReaderRoleId'))]",
+                "principalId": "[parameters('atomityServicePrincipalObjectId')]",
+                "principalType": "ServicePrincipal",
+                "description": "Atomity read-only access to billing export Parquet files in this storage account."
+              }
+            }
+          ],
+          "outputs": {
+            "roleAssignmentId": {
+              "type": "string",
+              "value": "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), parameters('atomityServicePrincipalObjectId'), parameters('storageBlobDataReaderRoleId')))]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "condition": "[equals(parameters('scopeMode'), 'subscription')]",
+      "copy": {
+        "name": "subscriptionReaderCopy",
+        "count": "[length(parameters('subscriptionIds'))]"
+      },
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "[format('atomity-sub-reader-{0}', parameters('subscriptionIds')[copyIndex()])]",
+      "subscriptionId": "[parameters('subscriptionIds')[copyIndex()]]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "mode": "Incremental",
+        "parameters": {
+          "atomityServicePrincipalObjectId": {
+            "value": "[parameters('atomityServicePrincipalObjectId')]"
+          },
+          "readerRoleId": {
+            "value": "[variables('readerRoleId')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "atomityServicePrincipalObjectId": {
+              "type": "string"
+            },
+            "readerRoleId": {
+              "type": "string"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[guid(subscription().id, parameters('atomityServicePrincipalObjectId'), parameters('readerRoleId'))]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', parameters('readerRoleId'))]",
+                "principalId": "[parameters('atomityServicePrincipalObjectId')]",
+                "principalType": "ServicePrincipal",
+                "description": "Atomity read-only inventory and metrics access on this subscription."
+              }
+            }
+          ],
+          "outputs": {
+            "roleAssignmentId": {
+              "type": "string",
+              "value": "[subscriptionResourceId('Microsoft.Authorization/roleAssignments', guid(subscription().id, parameters('atomityServicePrincipalObjectId'), parameters('readerRoleId')))]"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "readerScope": {
+      "type": "string",
+      "value": "[if(equals(parameters('scopeMode'), 'management_group'), managementGroup().id, 'Subscriptions')]"
+    },
+    "storageAccount": {
+      "type": "string",
+      "value": "[parameters('storageAccountName')]"
+    },
+    "storageRoleAssignmentId": {
+      "type": "string",
+      "value": "[reference('atomity-storage-role-deployment').outputs.roleAssignmentId.value]"
+    }
+  }
+}
+
