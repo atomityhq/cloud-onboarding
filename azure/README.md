@@ -1,8 +1,6 @@
 # Atomity Azure connection
 
-Connects an Azure tenant to Atomity with read-only access. One Terraform run does what
-steps 1 to 3 of the Atomity onboarding wizard otherwise have you click through by hand.
-Step 4, **Validate connection**, happens in Atomity.
+Connects an Azure tenant to Atomity with read-only access.
 
 ## What it creates
 
@@ -61,7 +59,7 @@ The wizard generates these commands with your values filled in.
 
 ```bash
 mkdir atomity-azure && cd atomity-azure
-terraform init -from-module="https://github.com/atomity/cloud-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
+terraform init -from-module="https://github.com/atomity/terraform-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
 
 cat > terraform.tfvars <<'EOT'
 tenant_id            = "<your Entra tenant ID>"
@@ -116,7 +114,8 @@ subscription_ids = ["<subscription ID>", "<subscription ID>"]
 For teams that don't use Terraform. Azure Cloud Shell is already signed in and includes the Azure CLI
 and Terraform, so there is nothing to install. The script is a thin wrapper around the Terraform
 module: it downloads a pinned release, verifies its checksum, shows you the plan, and changes nothing
-until you type `yes`.
+until you type `yes`. It runs the newest Terraform release built into the script. Use
+`--module-tag` to run an older one, and `--version` to list them.
 
 ### Before you start
 
@@ -128,7 +127,7 @@ until you type `yes`.
 The wizard generates this command with your values filled in, including the script's checksum.
 
 ```bash
-curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh
 echo "<script checksum from the wizard>  atomity-azure.sh" | sha256sum -c - && bash atomity-azure.sh apply \
   --tenant-id "<your Entra tenant ID>" \
   --storage-account "<existing storage account>" \
@@ -164,6 +163,7 @@ To scan only some subscriptions, replace the last two lines with:
 | `--root-folder` | `root_folder_path` | Folder inside the container. |
 | `--storage-subscription` | `subscription_id` | Subscription that holds the storage account, if it isn't the Cloud Shell default. |
 | `--storage-account-id` | `storage_account_id` | Full resource ID, if the storage account is in another subscription. |
+| `--module-tag` | none | Run this Terraform release instead of the newest one the script includes. `--version` lists them. |
 | `--yes` | none | Skip the confirmation prompt. |
 
 The script keeps the Terraform state and your settings in `~/atomity-azure`, which Cloud Shell stores
@@ -206,5 +206,5 @@ delete the Service Principal under **Entra ID → Enterprise applications**.
 - With `scope_mode = "subscription"`, a subscription added later is not covered until you add it
   to `subscription_ids` and apply again.
 - Verify a download: compare it with the published `.sha256` file, or run
-  `gh attestation verify <file> --repo atomity/cloud-onboarding`.
-- Azure is released separately from AWS. Terraform is on `azure-tf-vX.Y.Z` tags and the Cloud Shell script on `azure-shell-vX.Y.Z` tags. Each script release pins one Terraform release.
+  `gh attestation verify <file> --repo atomity/terraform-onboarding`.
+- Azure is released as such: Terraform is on `azure-tf-vX.Y.Z` tags and the Cloud Shell script on `azure-shell-vX.Y.Z` tags. Each script release pins one or more Terraform releases and runs the newest by default.

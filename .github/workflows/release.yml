@@ -11,14 +11,16 @@ name: release
 # CloudFormation release: atomity.yaml (generated from <cloud>/cloudformation/),
 #                         a checksum and a build-provenance attestation.
 # Cloud Shell release:    atomity-azure.sh (built from <cloud>/cloud-shell/), a checksum and
-#                         a build-provenance attestation. The script pins one Terraform
-#                         release (TERRAFORM_TAG), so that release must be published first.
+#                         a build-provenance attestation. The script pins the Terraform
+#                         releases listed in TERRAFORM_TAGS, runs the newest by default, and
+#                         every one of them must already be published.
 #
 # AWS: both methods read the same shared files (policies/, focus_query.sql,
 # member_role.yaml). A release warns when those changed since the other
 # method's latest release, so one method does not fall behind unnoticed.
 # Azure: the Cloud Shell script runs the released Terraform module, so there is
-# nothing to keep in sync. A Terraform release reminds you to bump the pin.
+# nothing to keep in sync. Publishing a Terraform release opens a pull request that adds it
+# to TERRAFORM_TAGS; merging it and tagging <cloud>-shell-v... ships it to Cloud Shell users.
 on:
   push:
     tags:
@@ -74,16 +76,6 @@ jobs:
           if [ -n "$other" ] && ! git diff --quiet "$other" "$GITHUB_SHA" -- \
               "$CLOUD/policies" "$CLOUD/focus_query.sql" "$CLOUD/member_role.yaml"; then
             echo "::warning::Shared files changed since $other. Release CloudFormation too, or it keeps the old policies."
-          fi
-
-      - name: Remind to bump the Cloud Shell pin
-        env:
-          TAG: ${{ steps.v.outputs.tag }}
-          CLOUD: ${{ steps.v.outputs.cloud }}
-        run: |
-          pin_file="$CLOUD/cloud-shell/TERRAFORM_TAG"
-          if [ -f "$pin_file" ] && [ "$(tr -d '\n' < "$pin_file")" != "$TAG" ]; then
-            echo "::notice::$CLOUD/cloud-shell pins $(tr -d '\n' < "$pin_file"). To ship this release to Cloud Shell users, set TERRAFORM_TAG to $TAG and release ${CLOUD}-shell."
           fi
 
       - name: Build the zip (tracked files of one cloud, at the zip root, without cloudformation/ and cloud-shell/)
@@ -197,9 +189,10 @@ jobs:
           gh release create "$TAG" dist/atomity.yaml dist/atomity.yaml.sha256 \
             --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag
 
-  # The Cloud Shell script pins one Terraform release and carries its checksum. Before that
-  # checksum is stamped in, the pinned release is verified against its published checksum and
-  # its build-provenance attestation, so a tampered release cannot be pinned by accident.
+  # The Cloud Shell script pins several Terraform releases and carries each one's checksum.
+  # Before those checksums are stamped in, every pinned release is verified against its
+  # published checksum and its build-provenance attestation, so a tampered release cannot be
+  # pinned by accident.
   cloudshell:
     if: ${{ contains(github.ref_name, '-shell-') }}
     needs: ci
@@ -235,44 +228,54 @@ jobs:
             exit 1
           fi
 
-      - name: Verify the pinned Terraform release
+      - name: Verify every pinned Terraform release
         id: pin
         env:
           GH_TOKEN: ${{ github.token }}
           CLOUD: ${{ steps.v.outputs.cloud }}
         run: |
-          pin=$(tr -d '\n' < "$CLOUD/cloud-shell/TERRAFORM_TAG")
-          case "$pin" in
-            "${CLOUD}-tf-v"[0-9]*) ;;
-            *) echo "::error::TERRAFORM_TAG must name a ${CLOUD}-tf release, got '$pin'"; exit 1 ;;
-          esac
-          mkdir tf
-          gh release download "$pin" --pattern "${pin}.zip" --pattern "${pin}.zip.sha256" --dir tf
-          (cd tf && sha256sum -c "${pin}.zip.sha256")
-          gh attestation verify "tf/${pin}.zip" --repo "$GITHUB_REPOSITORY"
-          echo "pin=$pin" >> "$GITHUB_OUTPUT"
+          pins=$(grep -vE '^[[:space:]]*(#|$)' "$CLOUD/cloud-shell/TERRAFORM_TAGS" | tr -d ' ' || true)
+          if [ -z "$pins" ]; then
+            echo "::error::$CLOUD/cloud-shell/TERRAFORM_TAGS lists no releases"
+            exit 1
+          fi
+          for pin in $pins; do
+            case "$pin" in
+              "${CLOUD}-tf-v"[0-9]*) ;;
+              *) echo "::error::TERRAFORM_TAGS must list ${CLOUD}-tf releases, got '$pin'"; exit 1 ;;
+            esac
+            echo "::group::$pin"
+            gh release download "$pin" --pattern "${pin}.zip" --pattern "${pin}.zip.sha256" --dir "tf/${pin}"
+            (cd "tf/${pin}" && sha256sum -c "${pin}.zip.sha256")
+            gh attestation verify "tf/${pin}/${pin}.zip" --repo "$GITHUB_REPOSITORY"
+            echo "::endgroup::"
+          done
+          echo "pins=$(echo "$pins" | paste -sd, -)" >> "$GITHUB_OUTPUT"
 
-      - name: Build the script (stamps the version and the verified checksum)
+      - name: Build the script (stamps the version and the verified checksums)
         env:
           CLOUD: ${{ steps.v.outputs.cloud }}
           VERSION: ${{ steps.v.outputs.version }}
-          PIN: ${{ steps.pin.outputs.pin }}
+          PINS: ${{ steps.pin.outputs.pins }}
         run: |
-          python3 "$CLOUD/cloud-shell/build.py" --version "$VERSION" --tf-tag "$PIN" --zip "tf/${PIN}.zip" --out "$PWD/dist"
+          zips=()
+          for pin in ${PINS//,/ }; do zips+=(--zip "${pin}=tf/${pin}/${pin}.zip"); done
+          python3 "$CLOUD/cloud-shell/build.py" --version "$VERSION" --tf-tags "$PINS" "${zips[@]}" --out "$PWD/dist"
 
       - name: The built script must be complete and self-consistent
         env:
           VERSION: ${{ steps.v.outputs.version }}
-          PIN: ${{ steps.pin.outputs.pin }}
+          PINS: ${{ steps.pin.outputs.pins }}
         run: |
-          if grep -E '@@(SCRIPT_VERSION|TF_TAG|TF_SHA256)@@' dist/atomity-azure.sh; then
+          if grep -E '@@(SCRIPT_VERSION|PINNED_MODULES)@@' dist/atomity-azure.sh; then
             echo "::error::placeholders were left in the built script"
             exit 1
           fi
           shellcheck dist/atomity-azure.sh
           (cd dist && sha256sum -c atomity-azure.sh.sha256)
           bash dist/atomity-azure.sh --version | tee version.txt
-          grep -F "atomity-azure.sh ${VERSION} (Terraform module ${PIN})" version.txt
+          grep -F "atomity-azure.sh ${VERSION} (default Terraform module" version.txt
+          for pin in ${PINS//,/ }; do grep -F "$pin" version.txt; done
 
       - uses: actions/attest-build-provenance@v2
         with:
@@ -287,3 +290,65 @@ jobs:
           prev=$(git tag --list "${CLOUD}-shell-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
           gh release create "$TAG" dist/atomity-azure.sh dist/atomity-azure.sh.sha256 \
             --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag
+
+  # After a Terraform release is published, open a pull request that adds it to the Cloud
+  # Shell script's pins. Merging it and tagging <cloud>-shell-vX.Y.Z ships it to Cloud Shell
+  # users: the script runs the newest pinned release by default. Close the pull request if the
+  # release was only a test.
+  #
+  # A pull request opened with the default token does not start CI, so a required check would
+  # never run. Set a PIN_BUMP_TOKEN secret (a fine-grained token or GitHub App token with
+  # contents and pull-requests write) so CI runs on it. Without the secret this still works,
+  # but the pull request needs a close and reopen to start CI, and the repository setting
+  # "Allow GitHub Actions to create and approve pull requests" must be on.
+  bump-pin:
+    if: ${{ contains(github.ref_name, '-tf-') }}
+    needs: terraform
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the branch
+      pull-requests: write # open the pull request
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.PIN_BUMP_TOKEN || github.token }}
+
+      - name: Add the release to the Cloud Shell pins and open a pull request
+        env:
+          GH_TOKEN: ${{ secrets.PIN_BUMP_TOKEN || github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cloud="${TAG%%-*}" # azure-tf-v1.1.0 -> azure
+          file="$cloud/cloud-shell/TERRAFORM_TAGS"
+          if [ ! -f "$file" ]; then
+            echo "$cloud has no Cloud Shell script, so there is nothing to pin."
+            exit 0
+          fi
+          if grep -qx "$TAG" "$file"; then
+            echo "$TAG is already pinned."
+            exit 0
+          fi
+          branch="bump-pin/$TAG"
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null 2>&1; then
+            echo "The branch $branch already exists, so a pull request was already opened."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          # keep the comment lines, add the tag, and keep the tags newest first by version
+          {
+            grep -E '^[[:space:]]*#' "$file" || true
+            { grep -vE '^[[:space:]]*(#|$)' "$file" || true; echo "$TAG"; } | sort -rVu
+          } > "$file.new"
+          mv "$file.new" "$file"
+          git add "$file"
+          git commit -m "Pin $TAG in the Cloud Shell script"
+          git push origin "$branch"
+          body="Adds \`$TAG\` to \`$file\`.
+
+          The Cloud Shell script runs the newest pinned release by default, and every older pin stays selectable with \`--module-tag\`. To ship this release to Cloud Shell users, merge this and tag \`${cloud}-shell-vX.Y.Z\`. The release job verifies each pinned release's checksum and attestation before building.
+
+          Remove a pin you no longer want to ship by deleting its line. Close this pull request if \`$TAG\` was only a test release."
+          gh pr create --base main --head "$branch" --title "Pin $TAG in the Cloud Shell script" --body "$body"

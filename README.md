@@ -19,22 +19,22 @@ Terraform can fetch and initialize the module in one step. For example:
 
 ```bash
 mkdir atomity-aws && cd atomity-aws
-terraform init -from-module="https://github.com/atomity/cloud-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip"
+terraform init -from-module="https://github.com/atomity/terraform-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip"
 ```
 
 For Azure, use the `azure-tf` release in the same way:
 
 ```bash
 mkdir atomity-azure && cd atomity-azure
-terraform init -from-module="https://github.com/atomity/cloud-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
+terraform init -from-module="https://github.com/atomity/terraform-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
 ```
 
 See the cloud's own README for inputs and the full command list. Prefer to
 inspect the code first?
 
 ```bash
-curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip
-curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip.sha256
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip.sha256
 sha256sum -c aws-tf-v1.0.0.zip.sha256
 unzip aws-tf-v1.0.0.zip -d atomity-aws
 ```
@@ -42,7 +42,7 @@ unzip aws-tf-v1.0.0.zip -d atomity-aws
 Every release zip also carries a build-provenance attestation:
 
 ```bash
-gh attestation verify aws-tf-v1.0.0.zip --repo atomity/cloud-onboarding
+gh attestation verify aws-tf-v1.0.0.zip --repo atomity/terraform-onboarding
 ```
 
 ### CloudFormation
@@ -50,10 +50,10 @@ gh attestation verify aws-tf-v1.0.0.zip --repo atomity/cloud-onboarding
 The release is a single template, `atomity.yaml`:
 
 ```bash
-curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/aws-cfn-v1.0.0/atomity.yaml
-curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/aws-cfn-v1.0.0/atomity.yaml.sha256
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-cfn-v1.0.0/atomity.yaml
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/aws-cfn-v1.0.0/atomity.yaml.sha256
 sha256sum -c atomity.yaml.sha256
-gh attestation verify atomity.yaml --repo atomity/cloud-onboarding
+gh attestation verify atomity.yaml --repo atomity/terraform-onboarding
 ```
 
 The cloud's own README has the deploy commands and parameters.
@@ -73,10 +73,10 @@ The wizard generates one command that downloads the script, checks its checksum,
 To inspect the script first:
 
 ```bash
-curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh
-curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh.sha256
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh.sha256
 sha256sum -c atomity-azure.sh.sha256
-gh attestation verify atomity-azure.sh --repo atomity/cloud-onboarding
+gh attestation verify atomity-azure.sh --repo atomity/terraform-onboarding
 ```
 
 The script verifies the Terraform release it uses against a checksum built into it. The cloud's
@@ -98,8 +98,8 @@ azure/                    one cloud, with both setup methods
   *.tf                    the Terraform root module
   cloud-shell/            the Cloud Shell script (not part of the Terraform release)
     atomity-azure.sh      the script, with placeholders for the release stamp
-    build.py              stamps the pinned Terraform release into the script
-    TERRAFORM_TAG         the Terraform release the script pins
+    build.py              stamps the pinned Terraform releases into the script
+    TERRAFORM_TAGS        the Terraform releases the script pins, one tag per line
     test.sh               behaviour tests against a mock az and terraform
 docs/                     design documents, one per cloud
 .github/workflows/        ci.yml and release.yml
@@ -131,14 +131,20 @@ matches the shared policies, and fails if it has drifted. Never edit
 
 **Azure.** There is no copy to keep in sync. The Cloud Shell script holds no access
 definitions of its own: it runs a pinned release of the Terraform module, so both methods
-give the same result by construction. `TERRAFORM_TAG` names the pinned release, and
-`build.py` stamps that release's checksum into the script and fails if the release does not
-exist. To ship a Terraform change to Cloud Shell users, release Terraform first, set
-`TERRAFORM_TAG` to the new tag in a pull request, then release the script.
+give the same result by construction. `TERRAFORM_TAGS` lists the pinned releases, one per
+line. `build.py` stamps each release's checksum into the script and fails if a release does
+not exist. The script runs the newest pin by version number, and any pin with `--module-tag`.
+
+To ship a Terraform change to Cloud Shell users, release Terraform first. That opens a pull
+request adding the new tag to `TERRAFORM_TAGS`. Merge it, then release the script. Older pins
+stay in the file, so they remain selectable and serve as fallbacks: if the newest release is
+ever deleted, the script falls back to the next one. It falls back only when a release is
+gone (404 or 410). A checksum mismatch or any other download error stops it, so a replaced
+release is never hidden by an older one. Delete a line to stop shipping a pin.
 
 ### CI
 
-`ci.yml` runs on every push to `main`. It finds cloud
+`ci.yml` runs on every pull request and on every push to `main`. It finds cloud
 directories automatically, so adding `<cloud-provider>/` needs no workflow change.
 
 | Job | Checks |
@@ -188,19 +194,20 @@ git push origin azure-shell-v1.0.0
   `terraform validate`. It writes a checksum, attests provenance, and publishes the release.
 - **`-cfn-` (CloudFormation):** publishes `atomity.yaml` with a checksum and a
   provenance attestation.
-- **`-shell-` (Azure Cloud Shell):** verifies the Terraform release named in `TERRAFORM_TAG`
-  (its published checksum and its provenance attestation), then runs `build.py` to stamp that
-  release into the script and publishes `atomity-azure.sh` with a checksum and a provenance
-  attestation. The wizard embeds that checksum in the command it generates. The pinned
-  Terraform release must already be published.
+- **`-shell-` (Azure Cloud Shell):** verifies every Terraform release listed in
+  `TERRAFORM_TAGS` (its published checksum and its provenance attestation), then runs
+  `build.py` to stamp those releases into the script and publishes `atomity-azure.sh` with a
+  checksum and a provenance attestation. The wizard embeds that checksum in the command it
+  generates. Every pinned Terraform release must already be published.
 
 Tags are `<cloud>-<method>-vMAJOR.MINOR.PATCH`, so each cloud and method versions
 independently.
 
 When an AWS shared file changes (see above), release both methods, or one keeps the
 old policies. Each release warns if the shared files changed since the other
-method's latest release. On Azure, release the Terraform module first and then the script
-that pins it.
+method's latest release. On Azure, release the Terraform module first. The release opens a
+pull request that pins it in the Cloud Shell script, and merging that and tagging
+`azure-shell-v...` ships it.
 
 Breaking changes to inputs, parameters or outputs are a major version. The wizard
 pins one tag per method, so shipping a new version means bumping that tag in the
@@ -211,13 +218,19 @@ wizard.
 - Branch protection on `main`: require the `ci-ok` check
 - Protect `*-v*` tags so only maintainers can create or delete them
 - Turn on GitHub secret scanning and push protection
+- Add a `PIN_BUMP_TOKEN` secret: a fine-grained token or GitHub App token with contents and
+  pull-requests write. The pull request that pins a new Terraform release is opened with it,
+  so CI runs on that pull request. Without the secret the workflow still opens the pull
+  request, but CI does not start on it until you close and reopen it, and the repository
+  setting "Allow GitHub Actions to create and approve pull requests" must be on
 - Commit each cloud's `.terraform.lock.hcl` (CI uses it read-only when present):
   `terraform providers lock -platform=linux_amd64 -platform=darwin_arm64 -platform=darwin_amd64 -platform=windows_amd64`
 
 ### Adding a cloud
 
 1. Create `<cloud>/` with the required files
-2. Add the cloud's tag pattern, for example `<cloud>-tf-v[0-9]+.[0-9]+.[0-9]+`, to the tag filter in `.github/workflows/release.yml`
-3. Add a tflint ruleset for that provider to `.tflint.hcl`
-4. Only if the cloud also has a CloudFormation-style template: add `<cloud>/cloudformation/` with a `build.py`, and a `<cloud>-cfn-v…` tag pattern
-5. Only if the cloud also has a script method: add `<cloud>/<method-dir>/`, exclude it from the Terraform release zip, and add a `<cloud>-shell-v…` tag pattern. The script must run the released Terraform module rather than carry its own copy of the access definitions.
+2. Add the directory to `.github/dependabot.yml` and `.github/CODEOWNERS`
+3. Add the cloud's tag pattern, for example `<cloud>-tf-v[0-9]+.[0-9]+.[0-9]+`, to the tag filter in `.github/workflows/release.yml`
+4. Add a tflint ruleset for that provider to `.tflint.hcl`
+5. Only if the cloud also has a CloudFormation-style template: add `<cloud>/cloudformation/` with a `build.py`, and a `<cloud>-cfn-v…` tag pattern
+6. Only if the cloud also has a script method: add `<cloud>/<method-dir>/`, exclude it from the Terraform release zip, and add a `<cloud>-shell-v…` tag pattern. The script must run the released Terraform module rather than carry its own copy of the access definitions.
