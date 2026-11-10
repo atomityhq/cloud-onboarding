@@ -25,8 +25,7 @@ Parameters:
   AtomityRoleArn:
     Type: String
     Default: arn:aws:iam::602578933792:root
-    Description: Atomity principal allowed to assume the read-only role in this account: Atomity's AWS
-      account (the root ARN) or one specific Atomity role. Same for every customer.
+    Description: Atomity principal allowed to assume the read-only role in this account (Atomity's AWS account root ARN, or one specific Atomity role). Same for every customer.
     AllowedPattern: ^arn:aws:iam::[0-9]{12}:(root|role/.+)$
     ConstraintDescription: Must be an account root ARN (arn:aws:iam::123456789012:root) or an IAM role ARN.
   ExternalId:
