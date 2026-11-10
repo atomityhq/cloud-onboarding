@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_call: # also called by release.yml, so a tag can't ship without a green CI run
 
 permissions:
@@ -177,6 +178,41 @@ jobs:
           done
           exit $fail
 
+  # Cloud Shell scripts (<cloud>/cloud-shell/). The script is a thin wrapper around the
+  # released Terraform module, so these tests run it against a mock az and terraform. They
+  # prove the script's own logic (validation, checksums, plan and confirm, apply, remove),
+  # not the module itself. The module is covered by the validate and tflint jobs above.
+  shell:
+    name: shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: shellcheck, build script and behaviour tests
+        run: |
+          tests=$(git ls-files '*/cloud-shell/test.sh')
+          if [ -z "$tests" ]; then
+            echo "::error::no Cloud Shell tests found"
+            exit 1
+          fi
+          fail=0
+          for t in $tests; do
+            d=$(dirname "$t")
+            echo "::group::$d"
+            shellcheck "$d"/*.sh || fail=1
+            python3 -m py_compile "$d/build.py" || fail=1
+            # the pin must be a Terraform release tag of the same cloud
+            if ! grep -Eqx "$(dirname "$d")-tf-v[0-9]+\.[0-9]+\.[0-9]+" "$d/TERRAFORM_TAG"; then
+              echo "::error::$d/TERRAFORM_TAG must contain one tag like $(dirname "$d")-tf-v1.0.0"
+              fail=1
+            fi
+            bash "$t" || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
+
   checkov:
     name: security scan (checkov)
     runs-on: ubuntu-latest
@@ -192,7 +228,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [hygiene, fmt, validate, tflint, cfn-lint, cdk-compat, checkov]
+    needs: [hygiene, fmt, validate, tflint, cfn-lint, cdk-compat, shell, checkov]
     runs-on: ubuntu-latest
     steps:
       - env:

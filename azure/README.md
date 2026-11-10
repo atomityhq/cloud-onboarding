@@ -1,6 +1,8 @@
 # Atomity Azure connection
 
-Connects an Azure tenant to Atomity with read-only access. 
+Connects an Azure tenant to Atomity with read-only access. One Terraform run does what
+steps 1 to 3 of the Atomity onboarding wizard otherwise have you click through by hand.
+Step 4, **Validate connection**, happens in Atomity.
 
 ## What it creates
 
@@ -18,6 +20,21 @@ grant inside your own tenant.
 
 Terraform does not create the storage account or the container. You bring the storage account,
 and Cost Management creates the container on the first run.
+
+## Choose a method
+
+| | Terraform | Cloud Shell |
+|---|---|---|
+| Best for | Teams that use infrastructure as code | Teams that want one paste and no installed tools |
+| Runs in | Your own terminal or pipeline | Azure Cloud Shell, in the portal |
+| Management group or per-subscription scope | Yes | Yes |
+| Preview before changes | `terraform plan` | The `plan` command, and a plan before every apply |
+| Removal | `terraform destroy` | The `remove` command |
+
+The Cloud Shell script runs the same Terraform module, so both create exactly the same things.
+
+Use one method per tenant. Two tools managing the same role assignments conflict, so to switch,
+remove the first deployment before starting the second.
 
 ## Terraform
 
@@ -44,7 +61,7 @@ The wizard generates these commands with your values filled in.
 
 ```bash
 mkdir atomity-azure && cd atomity-azure
-terraform init -from-module="https://github.com/atomity/terraform-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
+terraform init -from-module="https://github.com/atomity/cloud-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
 
 cat > terraform.tfvars <<'EOT'
 tenant_id            = "<your Entra tenant ID>"
@@ -94,13 +111,80 @@ subscription_ids = ["<subscription ID>", "<subscription ID>"]
 `connection_details` has everything Atomity uses, in one object, to compare with the wizard.
 `service_principal_object_id` is the value to use if you assign roles by hand.
 
+## Cloud Shell
+
+For teams that don't use Terraform. Azure Cloud Shell is already signed in and includes the Azure CLI
+and Terraform, so there is nothing to install. The script is a thin wrapper around the Terraform
+module: it downloads a pinned release, verifies its checksum, shows you the plan, and changes nothing
+until you type `yes`.
+
+### Before you start
+
+- Azure Cloud Shell (Bash), opened from the Azure portal **in the tenant you are connecting**
+- The same storage account, billing account and permissions as for [Terraform](#before-you-start)
+
+### Deploy
+
+The wizard generates this command with your values filled in, including the script's checksum.
+
+```bash
+curl -fsSLO https://github.com/atomity/cloud-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh
+echo "<script checksum from the wizard>  atomity-azure.sh" | sha256sum -c - && bash atomity-azure.sh apply \
+  --tenant-id "<your Entra tenant ID>" \
+  --storage-account "<existing storage account>" \
+  --container "<container for the export>" \
+  --billing-account "<billing account ID>" \
+  --scope management-group \
+  --management-group-id "<root management group ID>"
+```
+
+The checksum line stops the paste if the download isn't the script the wizard expects. The script then
+checks the Terraform release it downloads against a checksum built into it.
+
+To only see what would be created, use `plan` instead of `apply`. Nothing is created.
+
+To scan only some subscriptions, replace the last two lines with:
+
+```bash
+  --scope subscription \
+  --subscription-ids "<subscription ID>,<subscription ID>"
+```
+
+### Options
+
+| Option | Terraform input | Description |
+|---|---|---|
+| `--tenant-id` | `tenant_id` | Your Entra tenant ID. Required. |
+| `--storage-account` | `storage_account_name` | Existing storage account for the export. Required. |
+| `--container` | `container_name` | Container for the export. Required. |
+| `--billing-account` | `billing_account_id` | Billing account the export is created on. Required. |
+| `--scope` | `scope_mode` | `management-group` (default) or `subscription`. |
+| `--management-group-id` | `management_group_id` | Root management group ID. Required for `management-group`. |
+| `--subscription-ids` | `subscription_ids` | Comma-separated. Empty means Atomity auto-discovers. |
+| `--root-folder` | `root_folder_path` | Folder inside the container. |
+| `--storage-subscription` | `subscription_id` | Subscription that holds the storage account, if it isn't the Cloud Shell default. |
+| `--storage-account-id` | `storage_account_id` | Full resource ID, if the storage account is in another subscription. |
+| `--yes` | none | Skip the confirmation prompt. |
+
+The script keeps the Terraform state and your settings in `~/atomity-azure`, which Cloud Shell stores
+persistently. It refuses to run if you are signed in to a different tenant than `--tenant-id`.
+
 ## Remove Atomity's access
 
-Run this from the folder you deployed from:
+**Terraform.** Run this from the folder you deployed from:
 
 ```bash
 terraform destroy
 ```
+
+**Cloud Shell.** Download the script as above and run it from the same Cloud Shell, with no other options:
+
+```bash
+bash atomity-azure.sh remove
+```
+
+It shows what will be removed and asks for confirmation. If the Cloud Shell storage that held the
+state is gone, the script says so and lists the manual steps below.
 
 This removes the export, every role assignment and the Service Principal. Atomity loses access
 immediately. The resource provider registration is left as it is, because other exports in your
@@ -122,5 +206,5 @@ delete the Service Principal under **Entra ID → Enterprise applications**.
 - With `scope_mode = "subscription"`, a subscription added later is not covered until you add it
   to `subscription_ids` and apply again.
 - Verify a download: compare it with the published `.sha256` file, or run
-  `gh attestation verify <file> --repo atomity/terraform-onboarding`.
-- Azure is released separately from AWS, on `azure-tf-vX.Y.Z` tags.
+  `gh attestation verify <file> --repo atomity/cloud-onboarding`.
+- Azure is released separately from AWS. Terraform is on `azure-tf-vX.Y.Z` tags and the Cloud Shell script on `azure-shell-vX.Y.Z` tags. Each script release pins one Terraform release.

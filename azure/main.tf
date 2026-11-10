@@ -36,7 +36,8 @@ locals {
   storage_subscription_id = split("/", local.storage_account_id)[2]
 
   # The wizard may write root_folder_path = "". Treat that the same as unset.
-  root_folder_path = var.root_folder_path == null ? null : nullif(trimspace(var.root_folder_path), "")
+  root_folder_trimmed = var.root_folder_path == null ? "" : trimspace(var.root_folder_path)
+  root_folder_path    = local.root_folder_trimmed == "" ? null : local.root_folder_trimmed
 }
 
 # ---------------------------------------------------------------------------
