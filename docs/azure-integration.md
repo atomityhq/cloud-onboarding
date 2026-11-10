@@ -112,7 +112,7 @@ generates the exact commands or links for each approach.
 
 | Approach | Best for | Status |
 |---|---|---|
-| Terraform | Teams that use infrastructure as code, or want a preview and a clean removal | In progress |
+| Terraform | Teams that use infrastructure as code, or want a preview and a clean removal | Implemented |
 | Cloud Shell script | Customers who want one paste and no installed tools | Planned |
 | ARM template with a Deploy to Azure button | Customers who prefer the portal and no extra tools. The counterpart of CloudFormation. | Planned |
 | Bicep module | Teams that standardize on Bicep. The counterpart of CDK. | Planned |
@@ -149,8 +149,15 @@ Cloud Shell runs in the portal, is already signed in, and includes the Azure CLI
 The customer pastes one command that the wizard generates with their values.
 
 The script is a thin wrapper over the released Terraform module. It downloads a pinned release,
-verifies its checksum, shows the plan, asks for confirmation, and then applies. A remove mode
-runs the destroy. It holds no definition of the access of its own, so it cannot drift from
+verifies its checksum, shows the plan, asks for confirmation, and then applies. A `plan` command
+stops after the plan, and a `remove` command runs the destroy.
+
+Two checksums protect the paste. The wizard's command includes the script's own checksum and
+verifies it before the script runs. The script, once verified, carries the checksum of the one
+Terraform release it pins, and verifies that download. The checksum comes from the wizard rather
+than from the same release page as the script, so one compromised download location cannot
+supply both. The script accepts only plain characters in the values it writes into the Terraform
+settings, so a pasted value cannot add configuration of its own. It holds no definition of the access of its own, so it cannot drift from
 Terraform. That is what separates it from the custom scripts described below.
 
 The Terraform state stays in Cloud Shell's persistent storage. The script is released on its own
