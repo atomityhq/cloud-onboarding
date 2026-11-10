@@ -30,6 +30,8 @@ policies come from the same files in [`policies/`](policies/).
 | Preview before changes | `terraform plan` | Change set |
 | Delete the bucket on removal | Optional, built in | Manual |
 
+AWS CDK teams use the CloudFormation template: see [AWS CDK](#aws-cdk).
+
 Use one method per AWS account. Two tools managing the same role conflict, so to switch,
 remove the first deployment before starting the second. The billing bucket is kept on
 removal, so the new deployment can reuse it.
@@ -199,6 +201,124 @@ aws cloudformation describe-stacks --region us-east-1 --stack-name atomity \
 `RoleArn` is the value to paste into Atomity. `S3Bucket`, `S3Prefix`, `ExportName`, `Region`,
 `Scope` and, for Organizations, `MemberStackSet` carry the rest of the connection details.
 
+## AWS CDK
+
+There is no separate CDK package. CDK teams import the CloudFormation template into
+their own app, so the role, permissions and export are identical to the other methods,
+and `cdk diff` shows exactly what changes when you update.
+
+### Before you start
+
+- A CDK v2 app whose target account and region are bootstrapped (the normal setup for CDK users)
+- `atomity.yaml` from the latest CloudFormation release. Check its checksum, then commit it
+  to your repository, for example as `atomity/atomity.yaml`.
+- The external ID from the Atomity wizard
+
+### Deploy
+
+TypeScript:
+
+```ts
+import * as cdk from 'aws-cdk-lib';
+import { CfnInclude } from 'aws-cdk-lib/cloudformation-include';
+
+const app = new cdk.App();
+
+// AWS creates Data Exports only in us-east-1, so this stack must be there.
+const stack = new cdk.Stack(app, 'Atomity', {
+  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: 'us-east-1' },
+});
+
+new CfnInclude(stack, 'Atomity', {
+  templateFile: 'atomity/atomity.yaml',
+  parameters: {
+    ExternalId: '<from the Atomity wizard>',
+    BucketName: '<a globally unique bucket name>',
+  },
+});
+```
+
+Python (same API):
+
+```python
+import os
+import aws_cdk as cdk
+from aws_cdk.cloudformation_include import CfnInclude
+
+app = cdk.App()
+stack = cdk.Stack(
+    app, "Atomity",
+    env=cdk.Environment(account=os.environ["CDK_DEFAULT_ACCOUNT"], region="us-east-1"),
+)
+CfnInclude(
+    stack, "Atomity",
+    template_file="atomity/atomity.yaml",
+    parameters={"ExternalId": "<from the Atomity wizard>", "BucketName": "<a globally unique bucket name>"},
+)
+
+app.synth()
+```
+
+Then deploy. CDK shows the IAM changes and asks you to approve them, and prints the stack
+outputs when it finishes. Paste the `RoleArn` output into the **Connect** step in Atomity.
+
+```bash
+cdk deploy Atomity
+```
+
+The parameters are the same as for [CloudFormation](#parameters). Values such as the bucket
+name go in `parameters`, as above. To change a setting that switches parts of the template on
+or off, set its default instead. For Organizations, e.g:
+
+```ts
+const atomity = new CfnInclude(stack, 'Atomity', { /* as above */ });
+atomity.getParameter('EnableOrganizations').default = 'true';
+atomity.getParameter('OrganizationRootId').default = 'r-ab12';
+```
+
+**Bucket outside `us-east-1`.** Add a second stack in the bucket's region that deploys only
+the bucket, and make the access stack depend on it:
+
+```ts
+const bucketStack = new cdk.Stack(app, 'AtomityBucket', {
+  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: 'eu-central-1' },
+});
+const bucketTemplate = new CfnInclude(bucketStack, 'Atomity', {
+  templateFile: 'atomity/atomity.yaml',
+  parameters: { BucketName: '<the same bucket name>' },
+});
+bucketTemplate.getParameter('Deploy').default = 'BucketOnly';
+
+// the access stack from above, with two more settings
+const accessTemplate = new CfnInclude(stack, 'Atomity', {
+  templateFile: 'atomity/atomity.yaml',
+  parameters: {
+    ExternalId: '<from the Atomity wizard>',
+    BucketName: '<the same bucket name>',
+  },
+});
+accessTemplate.getParameter('Deploy').default = 'AccessOnly';
+accessTemplate.getParameter('BucketRegion').default = 'eu-central-1';
+stack.addStackDependency(bucketStack);
+```
+
+**Why defaults, not `parameters`.** If you fix `Deploy` or `EnableOrganizations` in
+`parameters`, CDK replaces them with constants and prints about a dozen "condition will always
+return True/False" warnings. They are harmless but noisy. Setting the default leaves the
+template's conditions open. The single-stack setup prints no warnings. The two-stack layout
+still prints two, about outputs that the bucket stack does not create. Those are harmless too.
+
+**Keeping the external ID out of the template.** Values you give in `parameters` are written
+into the synthesized template in plain text, including the external ID. It then shows in
+`cdk.out` and in the CloudFormation console, and the template's `NoEcho` no longer applies.
+To keep it hidden, leave `ExternalId` out of `parameters` and pass it when you deploy:
+
+```bash
+cdk deploy Atomity --parameters Atomity:ExternalId="<from the Atomity wizard>"
+```
+
+To update, download the new release's `atomity.yaml`, replace your copy, and review `cdk diff`.
+
 ## Remove Atomity's access
 
 ### Terraform
@@ -217,7 +337,8 @@ For Organizations, also delete the `AtomityMemberRoles` StackSet. Otherwise the 
 
 ### CloudFormation
 
-Delete the stack that contains the role (`atomity` in the examples above):
+Delete the stack that contains the role (`atomity` in the examples above). If you deployed
+through CDK, `cdk destroy Atomity` does the same:
 
 ```bash
 aws cloudformation delete-stack --region us-east-1 --stack-name atomity

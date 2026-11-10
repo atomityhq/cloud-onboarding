@@ -50,6 +50,11 @@ gh attestation verify atomity.yaml --repo atomity/terraform-onboarding
 
 The cloud's own README has the deploy commands and parameters.
 
+### AWS CDK
+
+CDK teams use the CloudFormation release: they import `atomity.yaml` into their app with
+`CfnInclude`. There is no separate CDK package. See the cloud's own README for the code.
+
 ## For maintainers
 
 ### Layout
@@ -61,6 +66,7 @@ aws/                      one cloud, with both setup methods
   member_role.yaml        member-account role (Organizations), used by both methods
   focus_query.sql         billing export query, used by both methods
   cloudformation/         the CloudFormation template (generated) and its build script
+    cdk-test/             test that the template imports into a CDK app (not released)
 .github/workflows/        ci.yml and release.yml
 .tflint.hcl               lint rules
 .checkov.yaml             security scan config (every skip has a reason)
@@ -100,6 +106,7 @@ directories automatically, so adding `<cloud-provider>/` needs no workflow chang
 | validate | `terraform validate` on the oldest supported Terraform (1.5.7) and the latest |
 | tflint | Terraform and AWS rulesets |
 | cfn-lint | `atomity.yaml` is up to date, `member_role.yaml` matches the shared policies, and every CloudFormation template passes `cfn-lint` |
+| cdk-compat | the released `atomity.yaml` imports and synthesizes through CDK's `CfnInclude` |
 | checkov | security scan, with documented skips in `.checkov.yaml` |
 | ci-ok | one aggregate result to use as the required status check |
 
@@ -112,6 +119,7 @@ checkov --config-file .checkov.yaml
 pip install cfn-lint pyyaml
 python3 aws/cloudformation/build.py --check
 cfn-lint aws/cloudformation/atomity.yaml aws/member_role.yaml
+(cd aws/cloudformation/cdk-test && npm ci && npm test)
 ```
 
 ### Releasing

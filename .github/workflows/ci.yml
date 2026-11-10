@@ -153,6 +153,30 @@ jobs:
           echo "$files"
           cfn-lint $files
 
+  # CDK users deploy the released CloudFormation template by importing it with CfnInclude.
+  # This proves the committed atomity.yaml still imports and synthesizes, so we can keep
+  # promising CDK support without maintaining a CDK package.
+  cdk-compat:
+    name: cdk compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Import each template through CDK
+        run: |
+          pkgs=$(git ls-files '*/cloudformation/cdk-test/package.json')
+          if [ -z "$pkgs" ]; then
+            echo "::error::no CDK compatibility test found"
+            exit 1
+          fi
+          fail=0
+          for pkg in $pkgs; do
+            (cd "$(dirname "$pkg")" && npm ci --no-audit --no-fund && npm test) || fail=1
+          done
+          exit $fail
+
   checkov:
     name: security scan (checkov)
     runs-on: ubuntu-latest
@@ -168,7 +192,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [hygiene, fmt, validate, tflint, cfn-lint, checkov]
+    needs: [hygiene, fmt, validate, tflint, cfn-lint, cdk-compat, checkov]
     runs-on: ubuntu-latest
     steps:
       - env:

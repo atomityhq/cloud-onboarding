@@ -3,3 +3,5 @@
 */*.tfstate.*
 */terraform.tfvars
 */crash.log
+node_modules/
+cdk.out/

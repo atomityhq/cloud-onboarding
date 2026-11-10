@@ -1,0 +1,12 @@
+{
+  "name": "atomity-cdk-compat-test",
+  "private": true,
+  "description": "Checks that the released atomity.yaml can be imported into a CDK app with CfnInclude. Not shipped to customers.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.274.0",
+    "constructs": "10.8.1"
+  }
+}
