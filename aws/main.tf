@@ -4,6 +4,12 @@ locals {
   role_name  = "AtomityReadOnly" # fixed: Atomity's side allows only this exact name
   account_id = data.aws_caller_identity.current.account_id
 
+  # Atomity's own AWS account, the same for every customer.
+  # Do not use local.account_id here: that is the customer's own account.
+  atomity_account_id    = "602578933792"
+  atomity_principal_arn = "arn:aws:iam::${local.atomity_account_id}:root"
+
+
   tags = {
     ManagedBy = "terraform"
     Purpose   = "atomity-cost-visibility"
@@ -18,7 +24,7 @@ resource "aws_iam_role" "atomity" {
   tags = local.tags
 
   assume_role_policy = templatefile("${path.module}/policies/trust.json", {
-    AtomityRoleArn = var.atomity_role_arn
+    AtomityRoleArn = local.atomity_principal_arn
     ExternalId     = var.external_id
   })
 }

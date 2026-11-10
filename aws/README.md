@@ -82,7 +82,7 @@ Paste the printed role ARN into the **Connect** step in Atomity.
 | `time_granularity` | `HOURLY` | `HOURLY`, `DAILY`, or `MONTHLY`. |
 | `enable_organizations` | `false` | Set to `true` in a management account to cover every member account. |
 | `stackset_call_as` | `SELF` | `DELEGATED_ADMIN` when running from a StackSets delegated admin account. |
-| `atomity_role_arn` | Atomity's collector role | The same for every customer. Normally left alone. |
+| `atomity_role_arn` | Atomity's service account | The same for every customer. Normally left alone. |
 
 ### Outputs
 
