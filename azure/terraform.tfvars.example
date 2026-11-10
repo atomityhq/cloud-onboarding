@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars (which is git-ignored) and fill in.
+# tenant_id            = "<your Entra tenant ID>"
+# storage_account_name = "<existing storage account>"
+# container_name       = "<container for the export>"
+# billing_account_id   = "<EA enrollment number or MCA billing account ID>"
+
+# Inventory and metrics scope. The default covers every subscription through
+# the root management group (its ID is often the same as the tenant ID):
+# management_group_id = "<root management group ID>"
+
+# Or, to scan only specific subscriptions instead:
+# scope_mode       = "subscription"
+# subscription_ids = ["<subscription ID>", "<subscription ID>"]
+# An empty list assigns no Reader role. Atomity then auto-discovers every
+# subscription it already has Reader on.
+
+# Optional:
+# root_folder_path   = "<folder inside the container>"
+# subscription_id    = "<subscription that holds the storage account>"
+# storage_account_id = "<full resource ID, if it is in another subscription>"
