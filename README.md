@@ -217,8 +217,7 @@ wizard.
 ### Adding a cloud
 
 1. Create `<cloud>/` with the required files
-2. Add the directory to `.github/dependabot.yml` and `.github/CODEOWNERS`
-3. Add the cloud's tag pattern, for example `<cloud>-tf-v[0-9]+.[0-9]+.[0-9]+`, to the tag filter in `.github/workflows/release.yml`
-4. Add a tflint ruleset for that provider to `.tflint.hcl`
-5. Only if the cloud also has a CloudFormation-style template: add `<cloud>/cloudformation/` with a `build.py`, and a `<cloud>-cfn-v…` tag pattern
-6. Only if the cloud also has a script method: add `<cloud>/<method-dir>/`, exclude it from the Terraform release zip, and add a `<cloud>-shell-v…` tag pattern. The script must run the released Terraform module rather than carry its own copy of the access definitions.
+2. Add the cloud's tag pattern, for example `<cloud>-tf-v[0-9]+.[0-9]+.[0-9]+`, to the tag filter in `.github/workflows/release.yml`
+3. Add a tflint ruleset for that provider to `.tflint.hcl`
+4. Only if the cloud also has a CloudFormation-style template: add `<cloud>/cloudformation/` with a `build.py`, and a `<cloud>-cfn-v…` tag pattern
+5. Only if the cloud also has a script method: add `<cloud>/<method-dir>/`, exclude it from the Terraform release zip, and add a `<cloud>-shell-v…` tag pattern. The script must run the released Terraform module rather than carry its own copy of the access definitions.
