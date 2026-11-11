@@ -15,6 +15,6 @@
 # subscription it already has Reader on.
 
 # Optional:
-# root_folder_path   = "<folder inside the container>"
+# root_folder_path   = "<folder inside the container, default atomity-exports>"
 # subscription_id    = "<subscription that holds the storage account>"
 # storage_account_id = "<full resource ID, if it is in another subscription>"

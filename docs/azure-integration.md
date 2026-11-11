@@ -113,7 +113,7 @@ generates the exact commands or links for each approach.
 | Approach | Best for | Status |
 |---|---|---|
 | Terraform | Teams that use infrastructure as code, or want a preview and a clean removal | Implemented |
-| Cloud Shell script | Customers who want one paste and no installed tools | Planned |
+| Cloud Shell script | Customers who want one paste and no installed tools | Implemented |
 | ARM template with a Deploy to Azure button | Customers who prefer the portal and no extra tools. The counterpart of CloudFormation. | Planned |
 | Bicep module | Teams that standardize on Bicep. The counterpart of CDK. | Planned |
 | Manual setup | Customers who cannot use any of the above | Implemented (the wizard walkthrough) |
@@ -153,15 +153,26 @@ verifies its checksum, shows the plan, asks for confirmation, and then applies. 
 stops after the plan, and a `remove` command runs the destroy.
 
 Two checksums protect the paste. The wizard's command includes the script's own checksum and
-verifies it before the script runs. The script, once verified, carries the checksum of the one
-Terraform release it pins, and verifies that download. The checksum comes from the wizard rather
+verifies it before the script runs. The script, once verified, carries the checksum of every
+Terraform release it pins, and verifies the download of the one it runs. The checksum comes from the wizard rather
 than from the same release page as the script, so one compromised download location cannot
-supply both. The script accepts only plain characters in the values it writes into the Terraform
+supply both.
+The script accepts only plain characters in the values it writes into the Terraform
 settings, so a pasted value cannot add configuration of its own. It holds no definition of the access of its own, so it cannot drift from
 Terraform. That is what separates it from the custom scripts described below.
 
 The Terraform state stays in Cloud Shell's persistent storage. The script is released on its own
-tag (`azure-shell-vX.Y.Z`) and pins one Terraform release.
+tag (`azure-shell-vX.Y.Z`) and pins one or more Terraform releases. It runs the newest by
+default, so customers get a new Terraform release when the wizard points them at a script
+release that includes it. A `--module-tag` option runs an older pinned release, for rollback
+or testing. If the newest release has been deleted, the script falls back to the next pin.
+It falls back only when a release is gone (HTTP 404 or 410). A checksum mismatch, any other
+HTTP error, or a network error stops it without trying another version, so a replaced release
+is never hidden behind an older one. Removal uses the release that created the connection,
+because a newer module may expect inputs the saved settings do not have.
+
+Publishing a Terraform release opens a pull request that adds it to the script's pins.
+Merging it and tagging a script release ships it.
 
 ### ARM template with a Deploy to Azure button
 
@@ -227,7 +238,7 @@ are built in and need no policy files.
 | The application ID `c4b84012-e86e-4ea0-9c42-5e015c1c30f4` | Every approach |
 | The two built-in role IDs, and where each is assigned | Every approach |
 | The export definition: `FocusCost`, Parquet, Snappy, daily, partitioned, overwrite, dataset version | Terraform, and the Bicep source that the ARM template is built from |
-| The Terraform release that the Cloud Shell script runs | Cloud Shell script |
+| The Terraform releases that the Cloud Shell script pins, newest used by default | Cloud Shell script |
 
 A template must be one self-contained file, so the ARM template is generated from the Bicep
 source by a build step. CI enforces the rest:
@@ -279,12 +290,14 @@ Management export is then deleted in the portal, or it keeps writing files.
 | Billing data as a FOCUS Parquet export in the customer's own storage | An open standard, the data stays in the customer's tenant, and no extra analytics services are needed | CSV exports, the legacy usage details exports |
 | FOCUS 1.2 (`1.2-preview`) by default | The same schema as the AWS export, so one reader handles both clouds. Azure's FOCUS 1.2 is still a preview | FOCUS 1.0 or 1.0r2, which are generally available but a different schema |
 | The export is created at billing account scope | Azure does not support FOCUS exports at management group scope, and a billing account export covers every subscription under it | One export per subscription |
+| The export always writes into a folder, `atomity-exports` unless the customer chooses one | Azure rejects an export with no root folder, and the AWS export has the same default prefix | Writing at the container root, which the Cost Management API does not accept |
 | The customer supplies the storage account | The wizard asks for it, and the module never owns the customer's data store, so removal cannot delete billing data | The module creates the storage account, as it does the bucket on AWS. May be offered later |
 | The module never unregisters `Microsoft.CostManagementExports` | Other exports in the subscription may rely on it | `azurerm_resource_provider_registration`, which unregisters on destroy |
 | The export uses `azapi`, not `azurerm` | `azurerm` cannot create FOCUS exports | Waiting for `azurerm` support |
 | ARM and Bicep approaches take the Service Principal's object ID as a parameter | ARM cannot create Entra objects, and the Bicep Service Principal type is in beta | Creating it with the Graph Bicep extension once it is generally available |
 | Terraform as the primary approach | Preview, state tracking, drift detection, a defined removal, and reviewable code | Custom scripts |
 | The Cloud Shell script wraps the Terraform module | One paste for customers without Terraform, with the same preview and removal, and no second definition to keep identical | A standalone Azure CLI script |
+| The Cloud Shell script pins several Terraform releases, runs the newest, and falls back only when a release is gone | Customers get a new release through a script release, a bad release can be bypassed with `--module-tag`, and a deleted release does not strand customers. Every pin has a known checksum, so verification still works. A replaced release is never hidden: a checksum mismatch stops the run | One pin, where every Terraform change and every rollback needs a new script. Resolving "latest" at run time, which needs the rate-limited GitHub API and leaves nothing to verify the download against. Falling back on any error, which would hide a replaced release |
 | One ARM template, generated from the Bicep source | One definition to review and release. The ARM template and the Bicep module cannot differ | A hand-written template next to a separate Bicep module |
 | Separate release tags per approach | A customer uses only one, so each sees only its own artifact and version history | One release containing everything |
 | One approach per tenant | Two tools managing the same role assignments would conflict | Mixing approaches |

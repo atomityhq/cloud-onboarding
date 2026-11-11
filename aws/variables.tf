@@ -48,12 +48,6 @@ variable "time_granularity" {
   }
 }
 
-variable "atomity_role_arn" {
-  type        = string
-  default     = "arn:aws:iam::602578933792:role/AtomityCollector"
-  description = "Atomity role allowed to assume the read-only role in this account. Same for every customer."
-}
-
 variable "enable_organizations" {
   type        = bool
   default     = false

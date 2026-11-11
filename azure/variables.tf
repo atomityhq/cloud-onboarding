@@ -65,7 +65,12 @@ variable "container_name" {
 variable "root_folder_path" {
   type        = string
   default     = null
-  description = "Optional folder inside the container where export files are written. Empty means the container root."
+  description = "Folder inside the container where export files are written. Azure requires one, so leaving this empty uses atomity-exports."
+
+  validation {
+    condition     = var.root_folder_path == null ? true : can(regex("^[A-Za-z0-9._/ -]*$", var.root_folder_path))
+    error_message = "root_folder_path may contain letters, digits and the characters . _ / - only."
+  }
 }
 
 variable "billing_account_id" {

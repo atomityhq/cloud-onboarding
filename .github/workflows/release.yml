@@ -2,23 +2,26 @@ name: release
 
 # Each setup method is released on its own tag, because a customer uses only one:
 #
-#   Terraform       git tag aws-tf-v1.0.0   && git push origin aws-tf-v1.0.0
-#   CloudFormation  git tag aws-cfn-v1.0.0  && git push origin aws-cfn-v1.0.0
+#   Terraform       git tag aws-tf-v1.0.0      && git push origin aws-tf-v1.0.0
+#   CloudFormation  git tag aws-cfn-v1.0.0     && git push origin aws-cfn-v1.0.0
+#   Cloud Shell     git tag azure-shell-v1.0.0 && git push origin azure-shell-v1.0.0
+#   Bicep / ARM     git tag azure-bicep-v1.0.0 && git push origin azure-bicep-v1.0.0
 #
-# Terraform release:      aws-tf-v1.0.0.zip (the module, without cloudformation/),
-#                         a checksum and a build-provenance attestation.
+# Terraform release:      aws-tf-v1.0.0.zip (the module, without cloudformation/,
+#                         cloud-shell/ and bicep/), a checksum and a build-provenance attestation.
 # CloudFormation release: atomity.yaml (generated from <cloud>/cloudformation/),
 #                         a checksum and a build-provenance attestation.
-#
-# Both methods read the same shared files (policies/, focus_query.sql,
-# member_role.yaml). A release warns when those changed since the other
-# method's latest release, so one method does not fall behind unnoticed.
+# Cloud Shell release:    atomity-azure.sh (built from <cloud>/cloud-shell/), a checksum and
+#                         a build-provenance attestation.
+# Bicep / ARM release:    atomity.json (compiled from <cloud>/bicep/), modules zip,
+#                         a checksum and a build-provenance attestation.
 on:
   push:
     tags:
       - "aws-tf-v[0-9]+.[0-9]+.[0-9]+"
       - "aws-cfn-v[0-9]+.[0-9]+.[0-9]+"
       - "azure-tf-v[0-9]+.[0-9]+.[0-9]+"
+      - "azure-shell-v[0-9]+.[0-9]+.[0-9]+"
       - "azure-bicep-v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
@@ -70,16 +73,16 @@ jobs:
             echo "::warning::Shared files changed since $other. Release CloudFormation too, or it keeps the old policies."
           fi
 
-      - name: Build the zip (tracked files of one cloud, at the zip root, without cloudformation/)
+      - name: Build the zip (tracked files of one cloud, at the zip root, without cloudformation/, cloud-shell/ and bicep/)
         env:
           TAG: ${{ steps.v.outputs.tag }}
           CLOUD: ${{ steps.v.outputs.cloud }}
         run: |
           mkdir dist
-          git archive --format=zip --output="dist/${TAG}.zip" "${GITHUB_SHA}:${CLOUD}" -- . ':(exclude)cloudformation'
+          git archive --format=zip --output="dist/${TAG}.zip" "${GITHUB_SHA}:${CLOUD}" -- . ':(exclude)cloudformation' ':(exclude)cloud-shell' ':(exclude)bicep'
           (cd dist && sha256sum "${TAG}.zip" > "${TAG}.zip.sha256")
           unzip -l "dist/${TAG}.zip"
-          if unzip -Z1 "dist/${TAG}.zip" | grep -E '\.tfstate|^terraform\.tfvars$|\.terraform/|^cloudformation/'; then
+          if unzip -Z1 "dist/${TAG}.zip" | grep -E '\.tfstate|^terraform\.tfvars$|\.terraform/|^cloudformation/|^cloud-shell/|^bicep/'; then
             echo "::error::Release zip contains files that must never ship"
             exit 1
           fi
@@ -88,9 +91,6 @@ jobs:
         with:
           terraform_wrapper: false
 
-      # The module reads policies/*.json, member_role.yaml and focus_query.sql from
-      # its own folder. Validate the extracted zip, not the repo, so a file that
-      # the zip is missing fails here instead of on a customer's machine.
       - name: The zip alone must be a working module
         env:
           TAG: ${{ steps.v.outputs.tag }}
@@ -111,7 +111,6 @@ jobs:
           TAG: ${{ steps.v.outputs.tag }}
           CLOUD: ${{ steps.v.outputs.cloud }}
         run: |
-          # notes cover changes since the previous Terraform release,
           prev=$(git tag --list "${CLOUD}-tf-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
           gh release create "$TAG" "dist/${TAG}.zip" "dist/${TAG}.zip.sha256" \
             --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag
@@ -158,7 +157,6 @@ jobs:
             echo "::warning::Shared files changed since $other. Release Terraform too, or it keeps the old policies."
           fi
 
-      # CI has already run build.py --check, so the committed template is current.
       - name: Collect the template
         env:
           CLOUD: ${{ steps.v.outputs.cloud }}
@@ -180,6 +178,89 @@ jobs:
           prev=$(git tag --list "${CLOUD}-cfn-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
           gh release create "$TAG" dist/atomity.yaml dist/atomity.yaml.sha256 \
             --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag
+
+  shell:
+    if: ${{ contains(github.ref_name, '-shell-') }}
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve cloud and version from the tag
+        id: v
+        run: |
+          tag="$GITHUB_REF_NAME"
+          cloud="${tag%%-*}" # azure-shell-v1.0.0 -> azure
+          version="${tag##*-}" # azure-shell-v1.0.0 -> v1.0.0
+          if [ ! -d "$cloud/cloud-shell" ]; then
+            echo "::error::Tag $tag has no matching directory '$cloud/cloud-shell/'"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "cloud=$cloud" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Tag must point at a commit on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main. Releases are cut from main only."
+            exit 1
+          fi
+
+      - name: Read pinned Terraform releases from TERRAFORM_TAGS
+        id: pin
+        env:
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          pins=$(grep -vE '^[[:space:]]*(#|$)' "$CLOUD/cloud-shell/TERRAFORM_TAGS" | tr '\n' ',' | sed 's/,$//')
+          if [ -z "$pins" ]; then
+            echo "::error::$CLOUD/cloud-shell/TERRAFORM_TAGS contains no pins"
+            exit 1
+          fi
+          echo "pins=$pins" >> "$GITHUB_OUTPUT"
+
+      - name: Download each pinned Terraform release archive and its checksum
+        env:
+          PINS: ${{ steps.pin.outputs.pins }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for pin in ${PINS//,/ }; do
+            mkdir -p "tf/$pin"
+            gh release download "$pin" --pattern "${pin}.zip*" --dir "tf/$pin"
+            (cd "tf/$pin" && sha256sum -c "${pin}.zip.sha256")
+            gh attestation verify "tf/$pin/${pin}.zip" --repo "$GITHUB_REPOSITORY"
+          done
+
+      - name: Build the script
+        env:
+          CLOUD: ${{ steps.v.outputs.cloud }}
+          VERSION: ${{ steps.v.outputs.version }}
+          PINS: ${{ steps.pin.outputs.pins }}
+        run: |
+          zips=()
+          for pin in ${PINS//,/ }; do zips+=(--zip "${pin}=tf/${pin}/${pin}.zip"); done
+          python3 "$CLOUD/cloud-shell/build.py" --version "$VERSION" --tf-tags "$PINS" "${zips[@]}" --out "$PWD/dist"
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/atomity-azure.sh
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          prev=$(git tag --list "${CLOUD}-shell-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
+          gh release create "$TAG" dist/atomity-azure.sh dist/atomity-azure.sh.sha256 \
+            --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag
+
   bicep:
     if: ${{ contains(github.ref_name, '-bicep-') }}
     needs: ci
@@ -236,3 +317,47 @@ jobs:
           prev=$(git tag --list "${CLOUD}-bicep-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
           gh release create "$TAG" dist/atomity.json dist/atomity.json.sha256 "dist/${TAG}-modules.zip" "dist/${TAG}-modules.zip.sha256" \
             --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag
+
+  bump-pin:
+    if: ${{ contains(github.ref_name, '-tf-') }}
+    needs: terraform
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.PIN_BUMP_TOKEN || github.token }}
+
+      - name: Add the release to the Cloud Shell pins and open a pull request
+        env:
+          GH_TOKEN: ${{ secrets.PIN_BUMP_TOKEN || github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cloud="${TAG%%-*}"
+          file="$cloud/cloud-shell/TERRAFORM_TAGS"
+          if [ ! -f "$file" ]; then
+            exit 0
+          fi
+          if grep -qx "$TAG" "$file"; then
+            exit 0
+          fi
+          branch="bump-pin/$TAG"
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null 2>&1; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          {
+            grep -E '^[[:space:]]*#' "$file" || true
+            { grep -vE '^[[:space:]]*(#|$)' "$file" || true; echo "$TAG"; } | sort -rVu
+          } > "$file.new"
+          mv "$file.new" "$file"
+          git add "$file"
+          git commit -m "Pin $TAG in the Cloud Shell script"
+          git push origin "$branch"
+          body="Adds \`$TAG\` to \`$file\`."
+          gh pr create --base main --head "$branch" --title "Pin $TAG in the Cloud Shell script" --body "$body"

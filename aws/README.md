@@ -56,7 +56,7 @@ The wizard generates these commands with your values filled in.
 
 ```bash
 mkdir atomity-aws && cd atomity-aws
-terraform init -from-module="https://github.com/atomity/terraform-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip"
+terraform init -from-module="https://github.com/atomityhq/cloud-onboarding/releases/download/aws-tf-v1.0.0/aws-tf-v1.0.0.zip"
 
 cat > terraform.tfvars <<'EOT'
 external_id = "<from the Atomity wizard>"
@@ -82,7 +82,7 @@ Paste the printed role ARN into the **Connect** step in Atomity.
 | `time_granularity` | `HOURLY` | `HOURLY`, `DAILY`, or `MONTHLY`. |
 | `enable_organizations` | `false` | Set to `true` in a management account to cover every member account. |
 | `stackset_call_as` | `SELF` | `DELEGATED_ADMIN` when running from a StackSets delegated admin account. |
-| `atomity_role_arn` | Atomity's collector role | The same for every customer. Normally left alone. |
+| `atomity_role_arn` | Atomity's service account | The same for every customer. Normally left alone. |
 
 ### Outputs
 
@@ -376,5 +376,5 @@ If versioning was turned on for the bucket, remove the old versions first, or `r
 
 - The Terraform state file contains your external ID. Don't commit it, and consider a remote backend if you keep this long term.
 - First export files can take up to 24 hours to appear. You can finish connecting before then.
-- Verify a download: compare it with the published `.sha256` file, or run `gh attestation verify <file> --repo atomity/terraform-onboarding`. This works for the Terraform zip and for `atomity.yaml`.
+- Verify a download: compare it with the published `.sha256` file, or run `gh attestation verify <file> --repo atomity/cloud-onboarding`. This works for the Terraform zip and for `atomity.yaml`.
 - Terraform and CloudFormation are released separately, on `aws-tf-vX.Y.Z` and `aws-cfn-vX.Y.Z` tags. You only need the one for the method you chose.

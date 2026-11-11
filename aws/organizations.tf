@@ -27,7 +27,7 @@ resource "aws_cloudformation_stack_set" "member_roles" {
 
   parameters = {
     ExternalId     = var.external_id
-    AtomityRoleArn = var.atomity_role_arn
+    AtomityRoleArn = local.atomity_principal_arn
   }
 
   # new accounts get the role.
