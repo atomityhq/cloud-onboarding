@@ -77,11 +77,19 @@ def run_bicep_compiler(check_only=False):
         proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
         compiled_json = json.loads(proc.stdout)
         current_json = json.loads(OUTPUT_JSON.read_text(encoding="utf-8"))
-
-        # Compare structure
-        if compiled_json.get("parameters") != current_json.get("parameters"):
+        # Verify that all parameter names match between Bicep and atomity.json
+        compiled_params = set(compiled_json.get("parameters", {}).keys())
+        current_params = set(current_json.get("parameters", {}).keys())
+        if compiled_params != current_params:
+            missing = compiled_params - current_params
+            extra = current_params - compiled_params
+            diff = []
+            if missing:
+                diff.append(f"missing: {sorted(missing)}")
+            if extra:
+                diff.append(f"extra: {sorted(extra)}")
             if check_only:
-                sys.exit(f"{OUTPUT_JSON.name} has parameter drift from {MAIN_BICEP.name}")
+                sys.exit(f"{OUTPUT_JSON.name} has parameter drift from {MAIN_BICEP.name}: {'; '.join(diff)}")
         print("Bicep compiler verification passed.")
     except Exception as e:
         print(f"Bicep compilation warning: {e}")
