@@ -6,7 +6,7 @@ Atomity with read-only access. The Atomity onboarding wizard generates the exact
 | Cloud | Directory | Setup methods | Status |
 |---|---|---|---|
 | AWS | [`aws/`](aws/) | Terraform, CloudFormation | Available |
-| Azure | [`azure/`](azure/) | Terraform, Cloud Shell, Bicep / ARM | In progress |
+| Azure | [`azure/`](azure/) | Terraform, Cloud Shell, Bicep / ARM | Available |
 
 ## For customers
 
