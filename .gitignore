@@ -5,3 +5,4 @@
 */crash.log
 node_modules/
 cdk.out/
+.venv

@@ -5,19 +5,25 @@ name: release
 #   Terraform       git tag aws-tf-v1.0.0      && git push origin aws-tf-v1.0.0
 #   CloudFormation  git tag aws-cfn-v1.0.0     && git push origin aws-cfn-v1.0.0
 #   Cloud Shell     git tag azure-shell-v1.0.0 && git push origin azure-shell-v1.0.0
+#   Bicep / ARM     git tag azure-bicep-v1.0.0 && git push origin azure-bicep-v1.0.0
 #
-# Terraform release:      aws-tf-v1.0.0.zip (the module, without cloudformation/ and
-#                         cloud-shell/), a checksum and a build-provenance attestation.
+# Terraform release:      aws-tf-v1.0.0.zip (the module, without cloudformation/, cloud-shell/
+#                         and bicep/), a checksum and a build-provenance attestation.
 # CloudFormation release: atomity.yaml (generated from <cloud>/cloudformation/),
 #                         a checksum and a build-provenance attestation.
 # Cloud Shell release:    atomity-azure.sh (built from <cloud>/cloud-shell/), a checksum and
 #                         a build-provenance attestation. The script pins the Terraform
 #                         releases listed in TERRAFORM_TAGS, runs the newest by default, and
 #                         every one of them must already be published.
+# Bicep / ARM release:    atomity.json (management group scope) and atomity-subscription.json
+#                         (subscription scope), the ARM templates compiled from <cloud>/bicep/ by
+#                         the pinned Bicep compiler, and <tag>-modules.zip (the Bicep source),
+#                         each with a checksum and a build-provenance attestation.
 #
 # AWS: both methods read the same shared files (policies/, focus_query.sql,
 # member_role.yaml). A release warns when those changed since the other
 # method's latest release, so one method does not fall behind unnoticed.
+#
 # Azure: the Cloud Shell script runs the released Terraform module, so there is
 # nothing to keep in sync. Publishing a Terraform release opens a pull request that adds it
 # to TERRAFORM_TAGS; merging it and tagging <cloud>-shell-v... ships it to Cloud Shell users.
@@ -28,6 +34,7 @@ on:
       - "aws-cfn-v[0-9]+.[0-9]+.[0-9]+"
       - "azure-tf-v[0-9]+.[0-9]+.[0-9]+"
       - "azure-shell-v[0-9]+.[0-9]+.[0-9]+"
+      - "azure-bicep-v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: read
@@ -78,16 +85,16 @@ jobs:
             echo "::warning::Shared files changed since $other. Release CloudFormation too, or it keeps the old policies."
           fi
 
-      - name: Build the zip (tracked files of one cloud, at the zip root, without cloudformation/ and cloud-shell/)
+      - name: Build the zip (tracked files of one cloud, at the zip root, without cloudformation/, cloud-shell/ and bicep/)
         env:
           TAG: ${{ steps.v.outputs.tag }}
           CLOUD: ${{ steps.v.outputs.cloud }}
         run: |
           mkdir dist
-          git archive --format=zip --output="dist/${TAG}.zip" "${GITHUB_SHA}:${CLOUD}" -- . ':(exclude)cloudformation' ':(exclude)cloud-shell'
+          git archive --format=zip --output="dist/${TAG}.zip" "${GITHUB_SHA}:${CLOUD}" -- . ':(exclude)cloudformation' ':(exclude)cloud-shell' ':(exclude)bicep'
           (cd dist && sha256sum "${TAG}.zip" > "${TAG}.zip.sha256")
           unzip -l "dist/${TAG}.zip"
-          if unzip -Z1 "dist/${TAG}.zip" | grep -E '\.tfstate|^terraform\.tfvars$|\.terraform/|^cloudformation/|^cloud-shell/'; then
+          if unzip -Z1 "dist/${TAG}.zip" | grep -E '\.tfstate|^terraform\.tfvars$|\.terraform/|^cloudformation/|^cloud-shell/|^bicep/'; then
             echo "::error::Release zip contains files that must never ship"
             exit 1
           fi
@@ -289,6 +296,110 @@ jobs:
         run: |
           prev=$(git tag --list "${CLOUD}-shell-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
           gh release create "$TAG" dist/atomity-azure.sh dist/atomity-azure.sh.sha256 \
+            --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag
+
+  # The Bicep / ARM release. Both ARM templates are generated from the Bicep source by the
+  # pinned compiler. CI has already checked them. This recompiles them from the exact tagged
+  # commit, then compiles the zip's contents on their own and compares that with the released
+  # templates, so the assets are proven to agree and the zip is proven to be complete.
+  bicep:
+    if: ${{ contains(github.ref_name, '-bicep-') }}
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve cloud from the tag
+        id: v
+        run: |
+          tag="$GITHUB_REF_NAME"
+          cloud="${tag%%-*}" # azure-bicep-v1.0.0 -> azure
+          if [ ! -f "$cloud/bicep/build.py" ]; then
+            echo "::error::Tag $tag has no Bicep build script at '$cloud/bicep/build.py'"
+            exit 1
+          fi
+          {
+            echo "tag=$tag"
+            echo "cloud=$cloud"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Tag must point at a commit on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main. Releases are cut from main only."
+            exit 1
+          fi
+
+      - name: Install the pinned Bicep compiler (checksum verified)
+        env:
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          bash "$CLOUD/bicep/install-bicep.sh"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: The committed templates must be exactly what the Bicep compiles to
+        env:
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: python3 "$CLOUD/bicep/build.py" --check
+
+      - name: Collect the release files (the templates and the Bicep source)
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          mkdir dist
+          cp "${CLOUD}/bicep/atomity.json" "${CLOUD}/bicep/atomity-subscription.json" dist/
+          # only the source a customer needs, never the build tooling
+          git archive --format=zip --output="dist/${TAG}-modules.zip" "${GITHUB_SHA}:${CLOUD}/bicep" -- main.bicep subscription.bicep modules
+          unzip -l "dist/${TAG}-modules.zip"
+          bad=$(unzip -Z1 "dist/${TAG}-modules.zip" | grep -vE '^(main\.bicep|subscription\.bicep|modules/|modules/[^/]+\.bicep)$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::The modules zip contains files that must not ship:"
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: The zip alone must compile to exactly the released templates
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          mkdir verify
+          unzip -q "dist/${TAG}-modules.zip" -d verify
+          python3 "$CLOUD/bicep/build.py" --check --source verify --output dist
+
+      - name: Checksums
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          cd dist
+          sha256sum atomity.json > atomity.json.sha256
+          sha256sum atomity-subscription.json > atomity-subscription.json.sha256
+          sha256sum "${TAG}-modules.zip" > "${TAG}-modules.zip.sha256"
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/atomity.json
+            dist/atomity-subscription.json
+            dist/${{ steps.v.outputs.tag }}-modules.zip
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+          CLOUD: ${{ steps.v.outputs.cloud }}
+        run: |
+          prev=$(git tag --list "${CLOUD}-bicep-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
+          gh release create "$TAG" dist/atomity.json dist/atomity.json.sha256 \
+            dist/atomity-subscription.json dist/atomity-subscription.json.sha256 \
+            "dist/${TAG}-modules.zip" "dist/${TAG}-modules.zip.sha256" \
             --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag
 
   # After a Terraform release is published, open a pull request that adds it to the Cloud
