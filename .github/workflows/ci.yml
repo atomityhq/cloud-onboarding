@@ -153,8 +153,13 @@ jobs:
           fi
           echo "$files"
           cfn-lint $files
-  # Azure Bicep & ARM templates. azure/bicep/atomity.json is checked for drift
-  # and validated against main.bicep.
+
+  # Bicep / ARM (<cloud>/bicep/). atomity.json is generated from main.bicep by the Bicep
+  # compiler pinned in BICEP_VERSION. This recompiles it and fails if the committed file is not
+  # exactly the compiler's output, or if the template breaks its contract (only the Reader and
+  # Storage Blob Data Reader roles, only role assignments). The tests prove the checker itself.
+  # It also checks that the export command in the module README, which the template cannot
+  # replace, sends the same export definition as the Terraform module.
   bicep-check:
     name: bicep-check
     runs-on: ubuntu-latest
@@ -163,13 +168,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install Azure CLI / Bicep
-        run: az bicep install || true
-      - name: Validate Bicep definitions and ARM template drift
+      - name: Pinned compiler, template drift check and tests
         run: |
+          pip install python-hcl2==8.2.0
+          builds=$(git ls-files '*/bicep/build.py')
+          if [ -z "$builds" ]; then
+            echo "::error::no Bicep build script found"
+            exit 1
+          fi
           fail=0
-          for b in $(git ls-files '*/bicep/build.py'); do
+          for b in $builds; do
+            d=$(dirname "$b")
+            echo "::group::$d"
+            shellcheck "$d/install-bicep.sh" || fail=1
+            bash "$d/install-bicep.sh" || fail=1
+            export PATH="$HOME/.local/bin:$PATH"
             python3 "$b" --check || fail=1
+            python3 "$d/test_build.py" || fail=1
+            python3 "$d/test_export_parity.py" || fail=1
+            echo "::endgroup::"
           done
           exit $fail
 

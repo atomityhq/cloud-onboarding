@@ -1,6 +1,8 @@
 # Atomity Azure connection
 
-Connects an Azure tenant to Atomity with read-only access.
+Connects an Azure tenant to Atomity with read-only access. One Terraform run does what
+steps 1 to 3 of the Atomity onboarding wizard otherwise have you click through by hand.
+Step 4, **Validate connection**, happens in Atomity.
 
 ## What it creates
 
@@ -18,87 +20,20 @@ grant inside your own tenant.
 
 Terraform does not create the storage account or the container. You bring the storage account,
 and Cost Management creates the container on the first run.
-## Choose a method
-| | Terraform | Cloud Shell | ARM / Deploy to Azure | Bicep Module |
-|---|---|---|---|---|
-| Best for | Teams that use Terraform for IaC | Teams that want one paste and no installed tools | Teams that prefer the Azure Portal or CLI with no tools | Teams that standardize on Azure Bicep (CDK equivalent) |
-| Runs in | Your own terminal or pipeline | Azure Cloud Shell, in the portal | Azure Portal or Azure CLI | Your own Bicep pipeline |
-| Management group or per-subscription scope | Yes | Yes | Yes | Yes |
-| Preview before changes | `terraform plan` | The `plan` command, and a plan before every apply | Azure Portal Review / `what-if` | `az deployment mg what-if` |
-| Removal | `terraform destroy` | The `remove` command | Delete Service Principal in Entra ID | Delete Service Principal in Entra ID |
----
-## ARM Template / Deploy to Azure
-Our CloudFormation equivalent. One self-contained template (`bicep/atomity.json`) deploys at
-management group scope directly from the Azure Portal with the **Deploy to Azure** button.
-### 1. Click to Deploy
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fatomityhq%2Fcloud-onboarding%2Fmain%2Fazure%2Fbicep%2Fatomity.json)
-### Before you click
-1. Complete **Step 1 (Admin Consent)** in the onboarding wizard. This creates Atomity's Service Principal in your tenant.
-2. Obtain the Service Principal's Object ID in your tenant:
-   ```bash
-   az ad sp show --id c4b84012-e86e-4ea0-9c42-5e015c1c30f4 --query id -o tsv
-   ```
-3. Have your storage account name, resource group, and subscription ID ready.
-### Deploy via Azure CLI
-If you prefer the command line over the Azure Portal button:
-```bash
-az deployment mg create \
-  --name "atomity-onboarding" \
-  --management-group-id "<root-management-group-id>" \
-  --location eastus \
-  --template-file azure/bicep/atomity.json \
-  --parameters \
-    atomityServicePrincipalObjectId="<from Step 1 above>" \
-    storageAccountSubscriptionId="<subscription ID>" \
-    storageAccountResourceGroupName="<resource group name>" \
-    storageAccountName="<storage account name>"
-```
-### Parameters
-| Name | Default | Description |
-|---|---|---|
-| `atomityServicePrincipalObjectId` | none (required) | Object ID of Atomity's Service Principal in your tenant. |
-| `storageAccountSubscriptionId` | none (required) | Subscription ID where your billing export storage account is located. |
-| `storageAccountResourceGroupName` | none (required) | Resource group name of the storage account. |
-| `storageAccountName` | none (required) | Name of the storage account designated to receive the FOCUS export. |
-| `scopeMode` | `management_group` | `management_group` (recommended) or `subscription`. |
-| `subscriptionIds` | `[]` | List of subscription IDs if `scopeMode` is set to `subscription`. |
----
-## Bicep
-Our AWS CDK equivalent, for teams that write Azure Bicep. Reference the module directly from
-your own Bicep infrastructure repository:
-```bicep
-targetScope = 'managementGroup'
-module atomityConnection 'bicep/main.bicep' = {
-  name: 'atomity-onboarding'
-  params: {
-    atomityServicePrincipalObjectId: '<SP_OBJECT_ID_FROM_STEP_1>'
-    storageAccountSubscriptionId: '<storage-account-subscription-id>'
-    storageAccountResourceGroupName: '<storage-account-resource-group>'
-    storageAccountName: '<storage-account-name>'
-  }
-}
-```
-Preview changes before deploying:
-```bash
-az deployment mg what-if \
-  --management-group-id "<root-management-group-id>" \
-  --location eastus \
-  --template-file main.bicep \
-  --parameters @parameters.json
-```
----
 
 ## Choose a method
 
-| | Terraform | Cloud Shell |
-|---|---|---|
-| Best for | Teams that use infrastructure as code | Teams that want one paste and no installed tools |
-| Runs in | Your own terminal or pipeline | Azure Cloud Shell, in the portal |
-| Management group or per-subscription scope | Yes | Yes |
-| Preview before changes | `terraform plan` | The `plan` command, and a plan before every apply |
-| Removal | `terraform destroy` | The `remove` command |
+| | Terraform | Cloud Shell | Bicep / ARM |
+|---|---|---|---|
+| Best for | Teams that use infrastructure as code | Teams that want one paste and no installed tools | Teams that deploy with ARM or Bicep, or from the Azure CLI |
+| Runs in | Your own terminal or pipeline | Azure Cloud Shell, in the portal | The Azure CLI or Cloud Shell |
+| Management group or per-subscription scope | Yes | Yes | Yes, with two templates |
+| Preview before changes | `terraform plan` | The `plan` command, and a plan before every apply | `az deployment mg what-if` |
+| Creates the Service Principal and the export | Yes | Yes | No. Create the Service Principal first. The export is one documented command afterwards. |
+| Removal | `terraform destroy` | The `remove` command | Remove the role assignments by hand |
 
-The Cloud Shell script runs the same Terraform module, so both create exactly the same things.
+The Cloud Shell script runs the same Terraform module, so those two create exactly the same
+things. Bicep / ARM creates the role assignments only.
 
 Use one method per tenant. Two tools managing the same role assignments conflict, so to switch,
 remove the first deployment before starting the second.
@@ -128,7 +63,7 @@ The wizard generates these commands with your values filled in.
 
 ```bash
 mkdir atomity-azure && cd atomity-azure
-terraform init -from-module="https://github.com/atomityhq/cloud-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
+terraform init -from-module="https://github.com/atomity/terraform-onboarding/releases/download/azure-tf-v1.0.0/azure-tf-v1.0.0.zip"
 
 cat > terraform.tfvars <<'EOT'
 tenant_id            = "<your Entra tenant ID>"
@@ -196,7 +131,7 @@ until you type `yes`. It runs the newest Terraform release built into the script
 The wizard generates this command with your values filled in, including the script's checksum.
 
 ```bash
-curl -fsSLO https://github.com/atomityhq/cloud-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/azure-shell-v1.0.0/atomity-azure.sh
 echo "<script checksum from the wizard>  atomity-azure.sh" | sha256sum -c - && bash atomity-azure.sh apply \
   --tenant-id "<your Entra tenant ID>" \
   --storage-account "<existing storage account>" \
@@ -237,6 +172,214 @@ To scan only some subscriptions, replace the last two lines with:
 
 The script keeps the Terraform state and your settings in `~/atomity-azure`, which Cloud Shell stores
 persistently. It refuses to run if you are signed in to a different tenant than `--tenant-id`.
+
+## Bicep / ARM
+
+For teams that deploy with ARM or Bicep, or from the Azure CLI in a pipeline. There are two ARM
+templates, compiled from Bicep, because the two scopes are deployed with different commands. Pick
+one:
+
+| Template | Grants `Reader` on | Deploy with | Needs |
+|---|---|---|---|
+| `atomity.json` | The root management group, so every current and future subscription | `az deployment mg create` | Deployment and role assignment rights at the management group |
+| `atomity-subscription.json` | Each subscription you list | `az deployment sub create` | Rights only on those subscriptions and the storage account. No management group rights. |
+
+Both also assign `Storage Blob Data Reader` on the storage account that receives your billing
+export. They create role assignments only. They do not create Atomity's Service Principal or the
+Cost Management export: you create the Service Principal first, and the export with a command
+afterwards. The release also has the Bicep source (`azure-bicep-vX.Y.Z-modules.zip`).
+
+### Before you start
+
+- The Azure CLI signed in to your tenant. Azure Cloud Shell has it.
+- Atomity's Service Principal in your tenant. Create it with the admin consent link in the
+  wizard. Its object ID is a parameter of both templates:
+
+  ```bash
+  az ad sp show --id c4b84012-e86e-4ea0-9c42-5e015c1c30f4 --query id -o tsv
+  ```
+
+- For the management group template: deployment rights at the management group named in
+  `--management-group-id`, and Owner or User Access Administrator on it and on the storage account.
+  A Global Administrator who is not yet Owner of the root management group must first elevate
+  access, as for Terraform.
+- For the subscription template: Contributor or Owner on the subscription you run the command
+  against, and Owner or User Access Administrator on each listed subscription and on the storage
+  account. It needs no management group rights.
+
+### Deploy at management group scope
+
+The wizard generates this command with your values and the template's checksum. Management group
+deployments are made with the Azure CLI, PowerShell or the REST API, so there is no portal button.
+
+```bash
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/azure-bicep-v1.0.0/atomity.json
+echo "<template checksum from the wizard>  atomity.json" | sha256sum -c - && az deployment mg create \
+  --name atomity \
+  --location "<region for the deployment record, for example westeurope>" \
+  --management-group-id "<root management group ID>" \
+  --template-file atomity.json \
+  --parameters \
+    atomityServicePrincipalObjectId="$(az ad sp show --id c4b84012-e86e-4ea0-9c42-5e015c1c30f4 --query id -o tsv)" \
+    storageAccountSubscriptionId="<subscription of the storage account>" \
+    storageAccountResourceGroupName="<its resource group>" \
+    storageAccountName="<storage account>"
+```
+
+To see what would be created, use `az deployment mg what-if` with the same arguments. Nothing is
+created.
+
+### Deploy per subscription
+
+Use this to grant `Reader` on only some subscriptions, or when you have no rights at a management
+group. Run it against any one of the subscriptions. Duplicates in the list are ignored, and a
+subscription added later is not covered until you deploy again with it listed.
+
+```bash
+curl -fsSLO https://github.com/atomity/terraform-onboarding/releases/download/azure-bicep-v1.0.0/atomity-subscription.json
+echo "<template checksum from the wizard>  atomity-subscription.json" | sha256sum -c - && az deployment sub create \
+  --name atomity \
+  --subscription "<any one of the subscriptions below>" \
+  --location "<region for the deployment record, for example westeurope>" \
+  --template-file atomity-subscription.json \
+  --parameters \
+    atomityServicePrincipalObjectId="$(az ad sp show --id c4b84012-e86e-4ea0-9c42-5e015c1c30f4 --query id -o tsv)" \
+    subscriptionIds='["<subscription ID>","<subscription ID>"]' \
+    storageAccountSubscriptionId="<subscription of the storage account>" \
+    storageAccountResourceGroupName="<its resource group>" \
+    storageAccountName="<storage account>"
+```
+
+To see what would be created, use `az deployment sub what-if` with the same arguments.
+
+### Create the export
+
+The template cannot create the Cost Management export, because a management group deployment
+cannot reach a billing account. Create it with this command. It sends the same export definition
+as the Terraform module: FOCUS 1.2, Parquet, Snappy, daily, written into a folder of your
+container. It needs the same billing account role as the Terraform method, in
+[Before you start](#before-you-start).
+
+```bash
+BILLING_ACCOUNT="<billing account ID>"
+STORAGE_SUBSCRIPTION="<subscription of the storage account>"
+STORAGE_RG="<its resource group>"
+STORAGE_ACCOUNT="<storage account>"
+CONTAINER="<container for the export>"
+ROOT_FOLDER="atomity-exports"   # Azure requires a folder. Change it if you want another one.
+
+# Cost Management exports must be registered on the storage account's subscription.
+az provider register --namespace Microsoft.CostManagementExports --subscription "$STORAGE_SUBSCRIPTION" --wait
+
+STORAGE_ID=$(az storage account show --subscription "$STORAGE_SUBSCRIPTION" \
+  --resource-group "$STORAGE_RG" --name "$STORAGE_ACCOUNT" --query id -o tsv)
+FROM=$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)
+EXPORT_URL="https://management.azure.com/providers/Microsoft.Billing/billingAccounts/$BILLING_ACCOUNT/providers/Microsoft.CostManagement/exports/atomity-focus"
+
+az rest --method put --url "$EXPORT_URL?api-version=2025-03-01" --body "$(cat <<EOF
+{
+  "properties": {
+    "format": "Parquet",
+    "compressionMode": "snappy",
+    "partitionData": true,
+    "dataOverwriteBehavior": "OverwritePreviousReport",
+    "definition": {
+      "type": "FocusCost",
+      "timeframe": "MonthToDate",
+      "dataSet": {
+        "granularity": "Daily",
+        "configuration": { "dataVersion": "1.2-preview" }
+      }
+    },
+    "deliveryInfo": {
+      "destination": {
+        "type": "AzureBlob",
+        "resourceId": "$STORAGE_ID",
+        "container": "$CONTAINER",
+        "rootFolderPath": "$ROOT_FOLDER"
+      }
+    },
+    "schedule": {
+      "status": "Active",
+      "recurrence": "Daily",
+      "recurrencePeriod": { "from": "$FROM", "to": "2099-12-31T00:00:00Z" }
+    }
+  }
+}
+EOF
+)"
+
+# Optional: run it once now instead of waiting for the first scheduled run.
+az rest --method post --url "$EXPORT_URL/run?api-version=2025-03-01"
+```
+
+The container is created on the first run if it does not exist. Azure can take up to 24 hours to
+deliver the first files. Running the command again updates the same export. It is safe to repeat.
+
+### Inputs
+
+Both templates take these four:
+
+| Name | Default | Description |
+|---|---|---|
+| `atomityServicePrincipalObjectId` | none (required) | Object ID of Atomity's Service Principal in your tenant. |
+| `storageAccountSubscriptionId` | none (required) | Subscription that holds the storage account. |
+| `storageAccountResourceGroupName` | none (required) | Resource group of the storage account. |
+| `storageAccountName` | none (required) | Existing storage account that receives the export. |
+
+The subscription template also takes:
+
+| Name | Default | Description |
+|---|---|---|
+| `subscriptionIds` | none (required, at least one) | Subscriptions to grant `Reader` on. |
+
+Outputs: `readerScope` (management group template) or `readerSubscriptions` (subscription template),
+`storageAccount` and `storageRoleAssignmentId`.
+
+### Use it from your own Bicep
+
+Unzip `azure-bicep-vX.Y.Z-modules.zip` into your repository, for example as `atomity/`, and call it
+as a module. `what-if` then shows exactly what changes when you update. The values below are
+samples. Replace them with yours.
+
+From a management group template:
+
+```bicep
+targetScope = 'managementGroup'
+
+module atomity './atomity/main.bicep' = {
+  name: 'atomity'
+  params: {
+    atomityServicePrincipalObjectId: '00000000-0000-0000-0000-000000000000'
+    storageAccountSubscriptionId: '11111111-1111-1111-1111-111111111111'
+    storageAccountResourceGroupName: 'billing-rg'
+    storageAccountName: 'acmebillingexports'
+  }
+}
+```
+
+From a subscription template:
+
+```bicep
+targetScope = 'subscription'
+
+module atomity './atomity/subscription.bicep' = {
+  name: 'atomity'
+  params: {
+    atomityServicePrincipalObjectId: '00000000-0000-0000-0000-000000000000'
+    subscriptionIds: [
+      '22222222-2222-2222-2222-222222222222'
+      '33333333-3333-3333-3333-333333333333'
+    ]
+    storageAccountSubscriptionId: '11111111-1111-1111-1111-111111111111'
+    storageAccountResourceGroupName: 'billing-rg'
+    storageAccountName: 'acmebillingexports'
+  }
+}
+```
+
+The ARM templates are generated from this source by a pinned Bicep compiler, and CI fails if they
+ever differ.
 
 ## Troubleshooting
 
@@ -307,10 +450,47 @@ This removes the export, every role assignment and the Service Principal. Atomit
 immediately. The resource provider registration is left as it is, because other exports in your
 subscription may rely on it.
 
-**ARM / Bicep.** Deleting an ARM/Bicep deployment record in Azure does not delete role assignments. To revoke access:
-1. Remove the role assignments for Atomity's Service Principal (`c4b84012-e86e-4ea0-9c42-5e015c1c30f4`) from the management group and storage account, **OR**
-2. Delete Atomity's Service Principal under **Microsoft Entra ID → Enterprise applications**. Access terminates immediately across all scopes.
-3. If you set up a Cost Management export, delete it in the Azure Portal under **Cost Management + Billing → Exports**.
-
-Your storage account, the container and the exported files are never managed by Terraform or ARM/Bicep, so
+Your storage account, the container and the exported files are never managed by Terraform, so
 they stay in your subscription and continue to incur storage costs until you delete them.
+
+**Bicep / ARM.** Deleting an ARM deployment does not delete what it created. Delete the Service
+Principal under **Entra ID → Enterprise applications**, which removes every role assignment at
+once. Or remove the assignments one by one:
+
+```bash
+az role assignment delete --assignee <service principal object ID> --role Reader \
+  --scope /providers/Microsoft.Management/managementGroups/<management group ID>
+az role assignment delete --assignee <service principal object ID> --role "Storage Blob Data Reader" \
+  --scope <storage account resource ID>
+```
+
+In per-subscription mode, delete the `Reader` assignment on each subscription instead:
+
+```bash
+az role assignment delete --assignee <service principal object ID> --role Reader \
+  --scope /subscriptions/<subscription ID>
+```
+
+Then delete the export, which the templates did not create:
+
+```bash
+az rest --method delete --url "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/<billing account ID>/providers/Microsoft.CostManagement/exports/atomity-focus?api-version=2025-03-01"
+```
+
+Your storage account, the container and the exported files stay.
+
+Without Terraform, either remove the role assignments for Atomity's application ID
+(`c4b84012-e86e-4ea0-9c42-5e015c1c30f4`) from each scope and from the storage account, or
+delete the Service Principal under **Entra ID → Enterprise applications**.
+
+## Notes
+
+- Atomity's access has no shared secret, so the Terraform state holds no credentials. It does
+  list your resource IDs, so don't commit it, and consider a remote backend if you keep this
+  long term.
+- First export files can take up to 24 hours to appear. You can finish connecting before then.
+- With `scope_mode = "subscription"`, a subscription added later is not covered until you add it
+  to `subscription_ids` and apply again.
+- Verify a download: compare it with the published `.sha256` file, or run
+  `gh attestation verify <file> --repo atomity/terraform-onboarding`.
+- Azure is released separately from AWS. Terraform is on `azure-tf-vX.Y.Z` tags, the Cloud Shell script on `azure-shell-vX.Y.Z` tags, and the ARM template and Bicep source on `azure-bicep-vX.Y.Z` tags. Each script release pins one or more Terraform releases and runs the newest by default.

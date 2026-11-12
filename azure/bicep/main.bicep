@@ -1,6 +1,8 @@
 targetScope = 'managementGroup'
 
-@description('Object ID of Atomity\'s Service Principal in your tenant (obtained after Step 1 admin consent).')
+metadata description = 'Atomity read-only connection for Azure, at management group scope: Reader on the management group and Storage Blob Data Reader on the billing export storage account. It creates role assignments only. It does not create the Service Principal or the Cost Management export. To grant Reader on individual subscriptions instead, use subscription.bicep.'
+
+@description('Object ID of Atomity\'s Service Principal in your tenant. Get it with: az ad sp show --id c4b84012-e86e-4ea0-9c42-5e015c1c30f4 --query id -o tsv')
 @minLength(36)
 @maxLength(36)
 param atomityServicePrincipalObjectId string
@@ -19,31 +21,18 @@ param storageAccountResourceGroupName string
 @maxLength(24)
 param storageAccountName string
 
-@description('How inventory and metrics access is scoped: management_group (recommended) or subscription.')
-@allowed([
-  'management_group'
-  'subscription'
-])
-param scopeMode string = 'management_group'
-
-@description('List of subscription IDs to grant Reader on when scopeMode is "subscription".')
-param subscriptionIds array = []
-
-@description('Deployment location metadata (used by ARM for deployment records).')
-param location string = deployment().location
-
-// Azure Built-in Role Definition IDs
+// Azure built-in role definition ID
 var readerRoleDefinitionId = 'acdd72a7-3385-48ef-bd42-f606fba81ae7'
 
 // ---------------------------------------------------------------------------
-// 1. Management Group Scope: Assign "Reader" to Atomity's Service Principal
+// 1. Management group: assign "Reader" to Atomity's Service Principal
 // ---------------------------------------------------------------------------
 resource readerRoleDefinition 'Microsoft.Authorization/roleDefinitions@2022-04-01' existing = {
   scope: tenant()
   name: readerRoleDefinitionId
 }
 
-resource managementGroupReaderAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (scopeMode == 'management_group') {
+resource managementGroupReaderAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(managementGroup().id, atomityServicePrincipalObjectId, readerRoleDefinitionId)
   properties: {
     roleDefinitionId: readerRoleDefinition.id
@@ -54,18 +43,7 @@ resource managementGroupReaderAssignment 'Microsoft.Authorization/roleAssignment
 }
 
 // ---------------------------------------------------------------------------
-// 2. Subscription Scope (Alternative): Assign "Reader" to specific subscriptions
-// ---------------------------------------------------------------------------
-module subscriptionReaderAssignments 'modules/subscription-role.bicep' = [for subId in subscriptionIds: if (scopeMode == 'subscription') {
-  name: 'atomity-sub-reader-${subId}'
-  scope: subscription(subId)
-  params: {
-    atomityServicePrincipalObjectId: atomityServicePrincipalObjectId
-  }
-}]
-
-// ---------------------------------------------------------------------------
-// 3. Storage Account Scope: Cross-scope module to assign "Storage Blob Data Reader"
+// 2. Storage account: cross-scope module that assigns "Storage Blob Data Reader"
 // ---------------------------------------------------------------------------
 module storageAccountRoleAssignment 'modules/storage-role.bicep' = {
   name: 'atomity-storage-role-deployment'
@@ -80,7 +58,7 @@ module storageAccountRoleAssignment 'modules/storage-role.bicep' = {
 // Outputs
 // ---------------------------------------------------------------------------
 @description('The scope where the Reader role was assigned.')
-output readerScope string = (scopeMode == 'management_group') ? managementGroup().id : 'Subscriptions'
+output readerScope string = managementGroup().id
 
 @description('The storage account receiving the export.')
 output storageAccount string = storageAccountName
