@@ -4,8 +4,13 @@ Terraform module. They are two writings of one definition, so this test fails CI
 disagree: a changed constant, a field added or removed on one side, a different default, a
 different API version, export name or provider.
 
-    pip install python-hcl2==8.2.0
-    python3 test_export_parity.py
+    python3 -m venv .venv && .venv/bin/pip install python-hcl2==8.2.0
+    .venv/bin/python test_export_parity.py
+
+Run it in a clean virtualenv. Other packages can install a different `hcl2` module over this one
+(checkov's bc-python-hcl2 does), and python-hcl2 changed its output format between major versions.
+The helpers below accept both formats: block labels and string values with or without their quote
+characters, and values with or without a one element list around them.
 
 It reads ../README.md, ../main.tf and ../variables.tf (the Azure module's own files).
 """
@@ -26,30 +31,52 @@ SHELL_VARS = ("STORAGE_ID", "CONTAINER", "ROOT_FOLDER", "FROM")
 
 
 def first(x):
-    """python-hcl2 wraps many values in a one element list."""
+    """Older python-hcl2 wraps many values in a one element list."""
     while isinstance(x, list) and len(x) == 1:
         x = x[0]
     return x
 
 
+def unq(x):
+    """python-hcl2 8 keeps the quotes of string literals and block labels. Older versions do not."""
+    x = first(x)
+    if isinstance(x, str) and len(x) >= 2 and x[0] == '"' and x[-1] == '"':
+        return x[1:-1].replace('\\"', '"')
+    return x
+
+
+def is_expression(x) -> bool:
+    return isinstance(x, str) and x.startswith("${") and x.endswith("}")
+
+
+def norm_expr(x: str) -> str:
+    return re.sub(r"\s+", "", x)
+
+
 def tf_variable_default(variables_tf: str, name: str):
     for block in hcl2.loads(variables_tf).get("variable", []):
-        if name in block:
-            return first(block[name].get("default"))
+        for label, body in block.items():
+            if unq(label) == name:
+                return unq(body.get("default"))
     raise AssertionError(f"variables.tf has no variable {name!r}")
 
 
 def tf_resource(parsed: dict, rtype: str, name: str):
     for r in parsed.get("resource", []):
-        if rtype in r and name in r[rtype]:
-            return r[rtype][name]
+        for type_label, by_name in r.items():
+            if unq(type_label) != rtype:
+                continue
+            for name_label, body in by_name.items():
+                if unq(name_label) == name:
+                    return body
     return None
 
 
 def tf_local(parsed: dict, name: str):
     for block in parsed.get("locals", []):
         if name in block:
-            return first(block[name])
+            v = first(block[name])
+            return v if is_expression(v) else unq(v)
     return None
 
 
@@ -76,6 +103,7 @@ def compare(tf, doc, path, expr_map, problems):
         if not isinstance(doc, dict):
             problems.append(f"{path}: Terraform has an object, the README does not")
             return
+        tf = {k: v for k, v in tf.items() if not (k.startswith("__") and k.endswith("__"))}
         for k in sorted(set(tf) - set(doc)):
             problems.append(f"{path}.{k}: in Terraform but missing from the README")
         for k in sorted(set(doc) - set(tf)):
@@ -83,14 +111,16 @@ def compare(tf, doc, path, expr_map, problems):
         for k in sorted(set(tf) & set(doc)):
             compare(tf[k], doc[k], f"{path}.{k}", expr_map, problems)
         return
-    if isinstance(tf, str) and "${" in tf:
-        if tf not in expr_map:
+    if is_expression(tf):
+        known = {norm_expr(k): v for k, v in expr_map.items()}
+        if norm_expr(tf) not in known:
             problems.append(f"{path}: Terraform uses {tf!r}, which this test does not know how to compare. Update the test and the README command together")
             return
-        want = expr_map[tf]
+        want = known[norm_expr(tf)]
         if doc != want:
             problems.append(f"{path}: Terraform expects {want!r}, the README has {doc!r}")
         return
+    tf = unq(tf)
     if tf != doc:
         problems.append(f"{path}: Terraform has {tf!r}, the README has {doc!r}")
 
@@ -127,7 +157,7 @@ def check(readme: str, main_tf: str, variables_tf: str) -> list:
         problems.append("the schedule starts 24 hours after creation in Terraform, and the README FROM is not now plus one day")
 
     # the API version, on every URL in the command
-    tf_api = re.search(r"@(\d{4}-\d{2}-\d{2})", first(resource["type"]))
+    tf_api = re.search(r"@(\d{4}-\d{2}-\d{2})", unq(resource["type"]) or "")
     urls = re.findall(r"api-version=(\d{4}-\d{2}-\d{2})", command)
     if not tf_api or not urls or set(urls) != {tf_api.group(1)}:
         problems.append(f"API version: Terraform {tf_api and tf_api.group(1)!r}, README {sorted(set(urls))}")
@@ -144,13 +174,13 @@ def check(readme: str, main_tf: str, variables_tf: str) -> list:
 
     # the resource provider that is registered
     register = tf_resource(parsed, "azapi_resource_action", "register_exports_rp")
-    namespace = re.search(r"/providers/([A-Za-z.]+)$", first(register["resource_id"])) if register else None
+    namespace = re.search(r"/providers/([A-Za-z.]+)$", unq(register["resource_id"]) or "") if register else None
     if not namespace or f"--namespace {namespace.group(1)}" not in command:
         problems.append(f"the provider registered by Terraform ({namespace and namespace.group(1)}) and by the README command differ")
 
     # the optional first run
     run = tf_resource(parsed, "azapi_resource_action", "run_export_now")
-    if run and first(run.get("action")) == "run" and "/run?api-version" not in command:
+    if run and unq(run.get("action")) == "run" and "/run?api-version" not in command:
         problems.append("Terraform runs the export once, and the README command does not")
     return problems
 
