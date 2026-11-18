@@ -11,6 +11,7 @@
 # The onboarding wizard generates the full command with your values filled in.
 
 set -euo pipefail
+umask 077
 
 # Stamped at release time by build.py. A copy that still has the placeholders
 # is a development copy and refuses to download anything.
@@ -44,6 +45,7 @@ MOD_TAGS=()
 MOD_SHAS=()
 ASSUME_YES=0
 TMP=""
+PLAN_FILE=""
 SHIFT=1
 AZURE_EVENTS_MODE="keep"
 WEBHOOK_ENDPOINT=""
@@ -54,8 +56,13 @@ die()  { printf 'Error: %s\n' "$*" >&2; exit 1; }
 info() { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
 
-cleanup() { if [[ -n "$TMP" && -d "$TMP" ]]; then rm -rf -- "$TMP"; fi; }
+cleanup() {
+  if [[ -n "$PLAN_FILE" ]]; then rm -f -- "$PLAN_FILE"; fi
+  if [[ -n "$TMP" && -d "$TMP" ]]; then rm -rf -- "$TMP"; fi
+}
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 usage() {
   cat <<'USAGE'
@@ -245,6 +252,14 @@ parse_args() {
 }
 
 validate_inputs() {
+  if [[ "$AZURE_EVENTS_MODE" == "enable" ]]; then
+    [[ -n "$WEBHOOK_ENDPOINT" ]] || die "--webhook-endpoint is required with --enable-azure-events."
+    [[ -n "$WEBHOOK_SECRET_FILE" ]] || die "--webhook-secret-file is required with --enable-azure-events."
+    [[ -f "$WEBHOOK_SECRET_FILE" && -r "$WEBHOOK_SECRET_FILE" ]] \
+      || die "--webhook-secret-file must name a readable regular file."
+  elif [[ -n "$WEBHOOK_ENDPOINT" || -n "$WEBHOOK_SECRET_FILE" ]]; then
+    die "Webhook arguments require --enable-azure-events."
+  fi
   local guid='^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$'
   [[ -n "$TENANT_ID" ]]       || die "--tenant-id is required."
   [[ -n "$STORAGE_ACCOUNT" ]] || die "--storage-account is required."
@@ -401,8 +416,13 @@ do_apply() {
   write_tfvars
   fetch_module
   write_eventgrid_settings
+  find "$WORKDIR" -maxdepth 1 -type f \
+    \( -name '*.tfstate' -o -name '*.tfstate.*' -o -name '*.tfvars' -o -name '*.auto.tfvars.json' -o -name tfplan \) \
+    -exec chmod 600 {} +
   tf_init
   step "Plan: what will be created"
+  PLAN_FILE="$WORKDIR/tfplan"
+  rm -f -- "$PLAN_FILE"
   (cd "$WORKDIR" && terraform plan -input=false -out=tfplan)
   if [[ "$CMD" == "plan" ]]; then
     info; info "This was only a plan. Nothing was created. Run the same command with 'apply' to continue."
@@ -442,8 +462,13 @@ do_remove() {
   STORAGE_SUBSCRIPTION=$(tfvar subscription_id)
   preflight
   fetch_module
+  find "$WORKDIR" -maxdepth 1 -type f \
+    \( -name '*.tfstate' -o -name '*.tfstate.*' -o -name '*.tfvars' -o -name '*.auto.tfvars.json' -o -name tfplan \) \
+    -exec chmod 600 {} +
   tf_init
   step "Plan: what will be removed"
+  PLAN_FILE="$WORKDIR/tfplan"
+  rm -f -- "$PLAN_FILE"
   (cd "$WORKDIR" && terraform plan -destroy -input=false -out=tfplan)
   info
   if ! confirm "Remove Atomity's access from tenant $TENANT_ID?"; then
@@ -508,7 +533,12 @@ if mode == "enable":
             "Use the HTTPS webhook endpoint returned by Atomity."
         )
 
-    secret = Path(secret_file).read_text().strip()
+    if not secret_file or not Path(secret_file).is_file():
+        raise SystemExit("--webhook-secret-file must name a readable regular file.")
+    try:
+        secret = Path(secret_file).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        raise SystemExit("Cannot read --webhook-secret-file as UTF-8 text.") from None
 
     if not re.fullmatch(r"[A-Za-z0-9_-]{43}", secret):
         raise SystemExit(
