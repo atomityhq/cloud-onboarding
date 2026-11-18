@@ -187,6 +187,9 @@ jobs:
             python3 "$d/test_build.py" || fail=1
             python3 "$d/test_export_parity.py" || fail=1
             echo "::endgroup::"
+            if [[ -f "$d/build_eventgrid.py" ]]; then
+              python3 "$d/build_eventgrid.py" --check || fail=1
+            fi
           done
           exit $fail
 

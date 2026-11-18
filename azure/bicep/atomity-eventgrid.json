@@ -1,0 +1,91 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.33.93.31351",
+      "templateHash": "6352134761486454211"
+    }
+  },
+  "parameters": {
+    "storageAccountName": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 24
+    },
+    "containerName": {
+      "type": "string",
+      "minLength": 3
+    },
+    "rootFolderPath": {
+      "type": "string",
+      "defaultValue": "atomity-exports",
+      "minLength": 1,
+      "metadata": {
+        "description": "Root directory without leading or trailing slashes."
+      }
+    },
+    "eventSubscriptionName": {
+      "type": "string",
+      "defaultValue": "atomity-cost-blob-created",
+      "minLength": 3,
+      "maxLength": 64
+    },
+    "webhookEndpoint": {
+      "type": "string",
+      "metadata": {
+        "description": "HTTPS endpoint returned by Atomity binding registration."
+      }
+    },
+    "webhookSecret": {
+      "type": "securestring",
+      "minLength": 43,
+      "maxLength": 43
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.EventGrid/eventSubscriptions",
+      "apiVersion": "2022-06-15",
+      "scope": "[format('Microsoft.Storage/storageAccounts/{0}', parameters('storageAccountName'))]",
+      "name": "[parameters('eventSubscriptionName')]",
+      "properties": {
+        "eventDeliverySchema": "EventGridSchema",
+        "destination": {
+          "endpointType": "WebHook",
+          "properties": {
+            "endpointUrl": "[parameters('webhookEndpoint')]",
+            "deliveryAttributeMappings": [
+              {
+                "name": "X-Atomity-Webhook-Token",
+                "type": "Static",
+                "properties": {
+                  "value": "[parameters('webhookSecret')]",
+                  "isSecret": true
+                }
+              }
+            ]
+          }
+        },
+        "filter": {
+          "includedEventTypes": [
+            "Microsoft.Storage.BlobCreated"
+          ],
+          "subjectBeginsWith": "[format('/blobServices/default/containers/{0}/blobs/{1}/', parameters('containerName'), parameters('rootFolderPath'))]",
+          "isSubjectCaseSensitive": true
+        },
+        "retryPolicy": {
+          "maxDeliveryAttempts": 30,
+          "eventTimeToLiveInMinutes": 1440
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "eventSubscriptionId": {
+      "type": "string",
+      "value": "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), 'Microsoft.EventGrid/eventSubscriptions', parameters('eventSubscriptionName'))]"
+    }
+  }
+}
