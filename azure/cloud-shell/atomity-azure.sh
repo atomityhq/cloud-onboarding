@@ -11,6 +11,7 @@
 # The onboarding wizard generates the full command with your values filled in.
 
 set -euo pipefail
+umask 077
 
 # Stamped at release time by build.py. A copy that still has the placeholders
 # is a development copy and refuses to download anything.
@@ -44,14 +45,24 @@ MOD_TAGS=()
 MOD_SHAS=()
 ASSUME_YES=0
 TMP=""
+PLAN_FILE=""
 SHIFT=1
+AZURE_EVENTS_MODE="keep"
+WEBHOOK_ENDPOINT=""
+WEBHOOK_SECRET_FILE=""
+EVENT_SUBSCRIPTION_NAME="atomity-cost-blob-created"
 
 die()  { printf 'Error: %s\n' "$*" >&2; exit 1; }
 info() { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
 
-cleanup() { if [[ -n "$TMP" && -d "$TMP" ]]; then rm -rf -- "$TMP"; fi; }
+cleanup() {
+  if [[ -n "$PLAN_FILE" ]]; then rm -f -- "$PLAN_FILE"; fi
+  if [[ -n "$TMP" && -d "$TMP" ]]; then rm -rf -- "$TMP"; fi
+}
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 usage() {
   cat <<'USAGE'
@@ -75,6 +86,14 @@ Options (apply and plan)
   --storage-subscription ID  Subscription that holds the storage account, if it
                              is not the Cloud Shell default
   --storage-account-id ID    Full resource ID of the storage account, if needed
+  Azure events (optional)
+    --enable-azure-events          Configure the registered webhook
+    --disable-azure-events         Remove the managed subscription on apply
+    --webhook-endpoint URL         Endpoint returned by Atomity
+    --webhook-secret-file FILE     File containing the one-time secret
+    --event-subscription-name NAME Stable name unique to the binding
+
+  Omit both mode flags to preserve saved event settings.
 
 General
   --yes                      Skip the confirmation prompt
@@ -196,12 +215,51 @@ parse_args() {
       --yes|-y)               ASSUME_YES=1; shift ;;
       --version)              print_version; exit 0 ;;
       -h|--help)              usage; exit 0 ;;
+      --enable-azure-events)
+        [[ "$AZURE_EVENTS_MODE" == "keep" ]] \
+          || die "Choose only one Azure events mode."
+        AZURE_EVENTS_MODE="enable"
+        shift
+        ;;
+
+      --disable-azure-events)
+        [[ "$AZURE_EVENTS_MODE" == "keep" ]] \
+          || die "Choose only one Azure events mode."
+        AZURE_EVENTS_MODE="disable"
+        shift
+        ;;
+
+      --webhook-endpoint)
+        need_value "$@"
+        WEBHOOK_ENDPOINT=$2
+        shift 2
+        ;;
+
+      --webhook-secret-file)
+        need_value "$@"
+        WEBHOOK_SECRET_FILE=$2
+        shift 2
+        ;;
+
+      --event-subscription-name)
+        need_value "$@"
+        EVENT_SUBSCRIPTION_NAME=$2
+        shift 2
+        ;;
       *) usage >&2; die "Unknown option: $1" ;;
     esac
   done
 }
 
 validate_inputs() {
+  if [[ "$AZURE_EVENTS_MODE" == "enable" ]]; then
+    [[ -n "$WEBHOOK_ENDPOINT" ]] || die "--webhook-endpoint is required with --enable-azure-events."
+    [[ -n "$WEBHOOK_SECRET_FILE" ]] || die "--webhook-secret-file is required with --enable-azure-events."
+    [[ -f "$WEBHOOK_SECRET_FILE" && -r "$WEBHOOK_SECRET_FILE" ]] \
+      || die "--webhook-secret-file must name a readable regular file."
+  elif [[ -n "$WEBHOOK_ENDPOINT" || -n "$WEBHOOK_SECRET_FILE" ]]; then
+    die "Webhook arguments require --enable-azure-events."
+  fi
   local guid='^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$'
   [[ -n "$TENANT_ID" ]]       || die "--tenant-id is required."
   [[ -n "$STORAGE_ACCOUNT" ]] || die "--storage-account is required."
@@ -357,8 +415,14 @@ do_apply() {
   preflight
   write_tfvars
   fetch_module
+  write_eventgrid_settings
+  find "$WORKDIR" -maxdepth 1 -type f \
+    \( -name '*.tfstate' -o -name '*.tfstate.*' -o -name '*.tfvars' -o -name '*.auto.tfvars.json' -o -name tfplan \) \
+    -exec chmod 600 {} +
   tf_init
   step "Plan: what will be created"
+  PLAN_FILE="$WORKDIR/tfplan"
+  rm -f -- "$PLAN_FILE"
   (cd "$WORKDIR" && terraform plan -input=false -out=tfplan)
   if [[ "$CMD" == "plan" ]]; then
     info; info "This was only a plan. Nothing was created. Run the same command with 'apply' to continue."
@@ -398,8 +462,13 @@ do_remove() {
   STORAGE_SUBSCRIPTION=$(tfvar subscription_id)
   preflight
   fetch_module
+  find "$WORKDIR" -maxdepth 1 -type f \
+    \( -name '*.tfstate' -o -name '*.tfstate.*' -o -name '*.tfvars' -o -name '*.auto.tfvars.json' -o -name tfplan \) \
+    -exec chmod 600 {} +
   tf_init
   step "Plan: what will be removed"
+  PLAN_FILE="$WORKDIR/tfplan"
+  rm -f -- "$PLAN_FILE"
   (cd "$WORKDIR" && terraform plan -destroy -input=false -out=tfplan)
   info
   if ! confirm "Remove Atomity's access from tenant $TENANT_ID?"; then
@@ -414,6 +483,92 @@ do_remove() {
   if [[ -n "$WORKDIR" && "$WORKDIR" != "/" && "$WORKDIR" != "$HOME" ]]; then
     rm -rf -- "$WORKDIR"
   fi
+}
+
+write_eventgrid_settings() {
+  local file="$WORKDIR/azure-events.auto.tfvars.json"
+
+  if [[ "$AZURE_EVENTS_MODE" == "keep" && ! -f "$file" ]]; then
+    return 0
+  fi
+
+  [[ -f "$WORKDIR/eventgrid.tf" ]] \
+    || die "This Terraform release does not support Azure events. Use the updated release."
+
+  if [[ "$AZURE_EVENTS_MODE" == "keep" ]]; then
+    return 0
+  fi
+
+  command -v python3 >/dev/null \
+    || die "python3 is required to configure Azure events."
+
+  python3 - \
+    "$file" \
+    "$AZURE_EVENTS_MODE" \
+    "$WEBHOOK_ENDPOINT" \
+    "$WEBHOOK_SECRET_FILE" \
+    "$EVENT_SUBSCRIPTION_NAME" <<'PY'
+import json
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+filename, mode, endpoint, secret_file, name = sys.argv[1:]
+
+values = {
+    "enable_azure_events": mode == "enable"
+}
+
+if mode == "enable":
+    endpoint_pattern = (
+        r"https://[A-Za-z0-9][A-Za-z0-9.-]*"
+        r"(?::[0-9]+)?/api/v1/webhooks/azure/"
+        r"[0-9a-fA-F-]{36}"
+    )
+
+    if not re.fullmatch(endpoint_pattern, endpoint):
+        raise SystemExit(
+            "Use the HTTPS webhook endpoint returned by Atomity."
+        )
+
+    if not secret_file or not Path(secret_file).is_file():
+        raise SystemExit("--webhook-secret-file must name a readable regular file.")
+    try:
+        secret = Path(secret_file).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        raise SystemExit("Cannot read --webhook-secret-file as UTF-8 text.") from None
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]{43}", secret):
+        raise SystemExit(
+            "The secret file must contain the secret returned by Atomity."
+        )
+
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{2,63}", name):
+        raise SystemExit("Invalid Event Grid subscription name.")
+
+    values.update(
+        azure_events_webhook_endpoint=endpoint,
+        azure_events_webhook_secret=secret,
+        azure_events_subscription_name=name,
+    )
+
+# mkstemp creates the file with mode 0600.
+fd, temporary = tempfile.mkstemp(
+    dir=str(Path(filename).parent)
+)
+
+try:
+    with os.fdopen(fd, "w") as out:
+        json.dump(values, out)
+        out.write("\n")
+
+    os.replace(temporary, filename)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
 }
 
 main() {

@@ -18,3 +18,11 @@
 # root_folder_path   = "<folder inside the container, default atomity-exports>"
 # subscription_id    = "<subscription that holds the storage account>"
 # storage_account_id = "<full resource ID, if it is in another subscription>"
+
+# Optional: use values returned by Atomity binding registration.
+enable_azure_events              = false
+azure_events_subscription_name   = "atomity-cost-blob-created"
+azure_events_webhook_endpoint    = ""
+
+# Supply azure_events_webhook_secret through protected input.
+# Never commit an actual webhook secret.

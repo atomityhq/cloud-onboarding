@@ -494,3 +494,32 @@ delete the Service Principal under **Entra ID → Enterprise applications**.
 - Verify a download: compare it with the published `.sha256` file, or run
   `gh attestation verify <file> --repo atomity/terraform-onboarding`.
 - Azure is released separately from AWS. Terraform is on `azure-tf-vX.Y.Z` tags, the Cloud Shell script on `azure-shell-vX.Y.Z` tags, and the ARM template and Bicep source on `azure-bicep-vX.Y.Z` tags. Each script release pins one or more Terraform releases and runs the newest by default.
+
+## Protecting webhook secrets and Terraform files
+
+Terraform's `sensitive` flag hides ordinary CLI output; it does not encrypt state
+or a saved plan. These files can contain the webhook secret. Use an encrypted,
+access-controlled remote backend for team deployments. Treat local state, backups,
+secret parameter files, saved plans and `terraform show -json` output as secrets.
+Do not attach them to an MR, CI artifact or support ticket.
+
+For Bash/Cloud Shell, create the input secret file under `umask 077`, make it mode
+0600, and supply its path using `--webhook-secret-file`. Do not put the secret itself
+on the command line. The wrapper uses a 0700 working directory, private generated
+settings, and deletes its temporary `tfplan` on exit, including cancellation and
+failed apply. Plan-only mode regenerates the plan when you later run apply.
+Do not run the wrapper with shell tracing (`bash -x`). Keep its private settings
+and state for later updates/removal; remove the original input secret file when
+it is no longer needed. On Windows, restrict the file's NTFS ACL to the intended
+user rather than relying on POSIX permission numbers.
+
+Direct Terraform users should likewise restrict their working directory and plan
+files and delete saved plans after review/apply/cancellation. Bicep/ARM users should
+use secure parameters and protected parameter files rather than literal secrets
+in shell history. Manual setup must configure EventGridSchema, BlobCreated, the
+correct container/root subject prefix, and a static secret delivery header named
+`X-Atomity-Webhook-Token`.
+
+Destination changes require a replacement binding and Event Grid redeployment.
+The frontend contract and recovery instructions are in
+[azure-events-frontend-contract.md](../docs/azure-events-frontend-contract.md).

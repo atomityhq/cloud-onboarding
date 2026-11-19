@@ -6,3 +6,10 @@
 node_modules/
 cdk.out/
 .venv
+__pycache__/
+*.py[cod]
+*.tfplan
+tfplan
+*.auto.tfvars
+*.auto.tfvars.json
+*.secret

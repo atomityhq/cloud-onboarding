@@ -144,9 +144,9 @@ check "build.py rejects a bad tag" '[[ $rc -ne 0 ]] && has "azure-tf-vX.Y.Z"'
 run python3 "$HERE/build.py" --tf-tags azure-tf-v1.0.0 --version 1.0 --out "$ROOT/x"
 check "build.py rejects a bad --version" '[[ $rc -ne 0 ]] && has "X.Y.Z"'
 
-pin_zips=(); while read -r t; do pin_zips+=(--zip "$t=$ZIP"); done < <(grep -vE '^[[:space:]]*(#|$)' "$HERE/TERRAFORM_TAGS")
+pin_zips=(); while read -r t; do t=${t%$'\r'}; pin_zips+=(--zip "$t=$ZIP"); done < <(grep -vE '^[[:space:]]*(#|$)' "$HERE/TERRAFORM_TAGS")
 run python3 "$HERE/build.py" --version 1.0.0 "${pin_zips[@]}" --out "$ROOT/x"
-check "build.py reads the pins from TERRAFORM_TAGS" 'has "Terraform pin  : $(grep -vE "^[[:space:]]*(#|$)" "$HERE/TERRAFORM_TAGS" | sed -n 1p)"'
+check "build.py reads the pins from TERRAFORM_TAGS" 'has "Terraform pin  : $(tr -d "\r" < "$HERE/TERRAFORM_TAGS" | grep -vE "^[[:space:]]*(#|$)" | sed -n 1p)"'
 
 check "stamped pins are newest first by version number" 'grep -q "^PINNED_MODULES=\"$TAG_HI " "$S"'
 run python3 "$HERE/build.py" --version 1.0.0 --tf-tags "$TAG_HI,$TAG_HI" --out "$ROOT/x"
@@ -341,9 +341,42 @@ open(port_path, "w").write(str(srv.server_address[1]))
 srv.serve_forever()
 PY
 echo '{}' > "$ROOT/codes.json"
-python3 "$ROOT/serve.py" "$ROOT/rel" "$ROOT/codes.json" "$ROOT/port" & SRV_PID=$!
-for _ in $(seq 1 50); do [[ -s "$ROOT/port" ]] && break; sleep 0.1; done
-HTTP="http://127.0.0.1:$(cat "$ROOT/port")"
+python3 "$ROOT/serve.py" "$ROOT/rel" "$ROOT/codes.json" "$ROOT/port" \
+  >"$ROOT/http-server.log" 2>&1 &
+SRV_PID=$!
+
+HTTP=""
+http_ready=0
+
+for _ in $(seq 1 50); do
+  if ! kill -0 "$SRV_PID" 2>/dev/null; then
+    echo "FAIL: local HTTP test server exited before becoming ready" >&2
+    cat "$ROOT/http-server.log" >&2
+    exit 1
+  fi
+
+  if [[ -s "$ROOT/port" ]]; then
+    HTTP="http://127.0.0.1:$(cat "$ROOT/port")"
+
+    # A 404 at / is fine: this checks connectivity, not content.
+    if curl --noproxy '*' --silent --output /dev/null \
+      --connect-timeout 1 --max-time 1 "$HTTP/"; then
+      http_ready=1
+      break
+    fi
+  fi
+
+  sleep 0.1
+done
+
+if [[ "$http_ready" != 1 ]]; then
+  echo "FAIL: local HTTP test server was not reachable at $HTTP" >&2
+  cat "$ROOT/http-server.log" >&2
+  exit 1
+fi
+
+export NO_PROXY="127.0.0.1,localhost${NO_PROXY:+,$NO_PROXY}"
+export no_proxy="127.0.0.1,localhost${no_proxy:+,$no_proxy}"
 setcode() { printf '{"%s": %s}' "$1" "$2" > "$ROOT/codes.json"; }
 for code in 404 410; do
   setcode "$TAG_HI" $code; reset; ATOMITY_RELEASES_BASE=$HTTP run bash "$S" "${PLAN[@]}"
@@ -351,7 +384,7 @@ for code in 404 410; do
 done
 for code in 403 500 503; do
   setcode "$TAG_HI" $code; reset; ATOMITY_RELEASES_BASE=$HTTP run bash "$S" "${PLAN[@]}"
-  check "HTTP $code on the newest: stops, does not fall back" '[[ $rc -ne 0 ]] && has "Could not download" && ! has "Trying the next" && ! has "Downloading $TAG_MID"' "$out"
+  check "HTTP $code on the newest: stops, does not fall back" '[[ $rc -ne 0 ]] && has "Could not download" && has "curl: (22)" && has "error: $code" && ! has "Trying the next" && ! has "Downloading $TAG_MID"' "$out"
 done
 echo '{}' > "$ROOT/codes.json"; reset; ATOMITY_RELEASES_BASE=$HTTP run bash "$S" "${PLAN[@]}"
 check "HTTP 200 works the same as file://" '[[ "$(marker)" == "# $TAG_HI" ]]'
@@ -446,6 +479,33 @@ check "correct checksum: script verified, runs, applies" 'has "atomity-azure.sh:
 reset; paste_cmd "$(printf '0%.0s' $(seq 1 64))" > "$ROOT/paste_bad.sh"
 run bash "$ROOT/paste_bad.sh"
 check "wrong checksum: script never runs" 'has "FAILED" && [[ ! -s "$MOCK_LOG" ]]'
+
+# ---------------------------------------------------------------- webhook input and secret handling
+echo "## webhook input and secret handling"
+ENDPOINT=https://hooks.example.test/api/v1/webhooks/azure/11111111-1111-1111-1111-111111111111
+SECRET=$(python3 -c 'print("a" * 43)')
+printf '%s\n' "$SECRET" > "$ROOT/webhook.secret"
+EVENT_BASE=(plan "${BASE[@]}" --management-group-id "$T" --enable-azure-events)
+reset; run bash "$S" "${EVENT_BASE[@]}"
+check "missing endpoint is actionable, before terraform" '[[ $rc -ne 0 ]] && has "--webhook-endpoint is required" && ! has "Traceback" && [[ ! -s "$MOCK_LOG" ]]'
+reset; run bash "$S" "${EVENT_BASE[@]}" --webhook-endpoint "$ENDPOINT"
+check "missing secret file is actionable, before terraform" '[[ $rc -ne 0 ]] && has "--webhook-secret-file is required" && ! has "Traceback" && [[ ! -s "$MOCK_LOG" ]]'
+reset; run bash "$S" "${EVENT_BASE[@]}" --webhook-endpoint "$ENDPOINT" --webhook-secret-file "$ROOT/missing"
+check "nonexistent secret file rejected without traceback" '[[ $rc -ne 0 ]] && has "readable regular file" && ! has "Traceback"'
+printf '\377' > "$ROOT/invalid.secret"
+reset; run bash "$S" "${EVENT_BASE[@]}" --webhook-endpoint "$ENDPOINT" --webhook-secret-file "$ROOT/invalid.secret"
+check "invalid UTF-8 has clear error" '[[ $rc -ne 0 ]] && has "Cannot read --webhook-secret-file" && ! has "Traceback"'
+EVENT_ARGS=("${EVENT_BASE[@]}" --webhook-endpoint "$ENDPOINT" --webhook-secret-file "$ROOT/webhook.secret")
+reset; run bash "$S" "${EVENT_ARGS[@]}"
+check "webhook plan succeeds without exposing secret" '[[ $rc -eq 0 ]] && ! has "$SECRET"'
+check "secret settings private, working directory private" '[[ $(stat -c %a "$ROOT/work/azure-events.auto.tfvars.json") == 600 && $(stat -c %a "$ROOT/work") == 700 ]]'
+check "plan-only removes saved plan" '[[ ! -e "$ROOT/work/tfplan" ]]'
+reset; run bash "$S" "${EVENT_ARGS[@]/plan/apply}" --yes
+check "successful apply removes saved plan" '[[ $rc -eq 0 ]] && [[ ! -e "$ROOT/work/tfplan" ]]'
+reset; MOCK_APPLY_FAIL=1 run bash "$S" "${EVENT_ARGS[@]/plan/apply}" --yes
+check "failed apply removes plan but retains private settings" '[[ $rc -ne 0 ]] && [[ ! -e "$ROOT/work/tfplan" && -f "$ROOT/work/azure-events.auto.tfvars.json" ]]'
+reset; out=$(pty no bash "$S" "${EVENT_ARGS[@]/plan/apply}")
+check "cancellation removes saved plan" 'has "Cancelled" && [[ ! -e "$ROOT/work/tfplan" ]]'
 
 # ---------------------------------------------------------------- summary
 echo

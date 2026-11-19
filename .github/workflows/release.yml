@@ -306,10 +306,12 @@ jobs:
     if: ${{ contains(github.ref_name, '-bicep-') }}
     needs: ci
     runs-on: ubuntu-latest
+
     permissions:
-      contents: write # create the release
-      id-token: write # sign the attestation
+      contents: write
+      id-token: write
       attestations: write
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -319,11 +321,13 @@ jobs:
         id: v
         run: |
           tag="$GITHUB_REF_NAME"
-          cloud="${tag%%-*}" # azure-bicep-v1.0.0 -> azure
+          cloud="${tag%%-*}"
+
           if [ ! -f "$cloud/bicep/build.py" ]; then
             echo "::error::Tag $tag has no Bicep build script at '$cloud/bicep/build.py'"
             exit 1
           fi
+
           {
             echo "tag=$tag"
             echo "cloud=$cloud"
@@ -343,51 +347,87 @@ jobs:
           bash "$CLOUD/bicep/install-bicep.sh"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: The committed templates must be exactly what the Bicep compiles to
+      - name: Verify all committed ARM templates
         env:
           CLOUD: ${{ steps.v.outputs.cloud }}
-        run: python3 "$CLOUD/bicep/build.py" --check
+        run: |
+          python3 "$CLOUD/bicep/build.py" --check
+          python3 "$CLOUD/bicep/build_eventgrid.py" --check
 
-      - name: Collect the release files (the templates and the Bicep source)
+      - name: Collect ARM templates and Bicep sources
         env:
           TAG: ${{ steps.v.outputs.tag }}
           CLOUD: ${{ steps.v.outputs.cloud }}
         run: |
           mkdir dist
-          cp "${CLOUD}/bicep/atomity.json" "${CLOUD}/bicep/atomity-subscription.json" dist/
-          # only the source a customer needs, never the build tooling
-          git archive --format=zip --output="dist/${TAG}-modules.zip" "${GITHUB_SHA}:${CLOUD}/bicep" -- main.bicep subscription.bicep modules
+
+          cp "${CLOUD}/bicep/atomity.json" \
+             "${CLOUD}/bicep/atomity-subscription.json" \
+             "${CLOUD}/bicep/atomity-eventgrid.json" \
+             dist/
+
+          git archive \
+            --format=zip \
+            --output="dist/${TAG}-modules.zip" \
+            "${GITHUB_SHA}:${CLOUD}/bicep" \
+            -- main.bicep subscription.bicep eventgrid.bicep modules
+
           unzip -l "dist/${TAG}-modules.zip"
-          bad=$(unzip -Z1 "dist/${TAG}-modules.zip" | grep -vE '^(main\.bicep|subscription\.bicep|modules/|modules/[^/]+\.bicep)$' || true)
+
+          bad=$(unzip -Z1 "dist/${TAG}-modules.zip" |
+            grep -vE '^(main\.bicep|subscription\.bicep|eventgrid\.bicep|modules/|modules/[^/]+\.bicep)$' ||
+            true)
+
           if [ -n "$bad" ]; then
             echo "::error::The modules zip contains files that must not ship:"
             echo "$bad"
             exit 1
           fi
 
-      - name: The zip alone must compile to exactly the released templates
+      - name: Verify templates against the extracted source ZIP
         env:
           TAG: ${{ steps.v.outputs.tag }}
           CLOUD: ${{ steps.v.outputs.cloud }}
         run: |
           mkdir verify
           unzip -q "dist/${TAG}-modules.zip" -d verify
-          python3 "$CLOUD/bicep/build.py" --check --source verify --output dist
 
-      - name: Checksums
+          python3 "$CLOUD/bicep/build.py" \
+            --check \
+            --source verify \
+            --output dist
+
+          python3 "$CLOUD/bicep/build_eventgrid.py" \
+            --check \
+            --source verify \
+            --output dist
+
+      - name: Generate checksums
         env:
           TAG: ${{ steps.v.outputs.tag }}
         run: |
           cd dist
-          sha256sum atomity.json > atomity.json.sha256
-          sha256sum atomity-subscription.json > atomity-subscription.json.sha256
-          sha256sum "${TAG}-modules.zip" > "${TAG}-modules.zip.sha256"
 
-      - uses: actions/attest-build-provenance@v2
+          sha256sum atomity.json \
+            > atomity.json.sha256
+
+          sha256sum atomity-subscription.json \
+            > atomity-subscription.json.sha256
+
+          sha256sum atomity-eventgrid.json \
+            > atomity-eventgrid.json.sha256
+
+          sha256sum "${TAG}-modules.zip" \
+            > "${TAG}-modules.zip.sha256"
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
             dist/atomity.json
             dist/atomity-subscription.json
+            dist/atomity-eventgrid.json
+            dist/atomity-eventgrid.json.sha256
             dist/${{ steps.v.outputs.tag }}-modules.zip
 
       - name: Publish the release
@@ -396,11 +436,24 @@ jobs:
           TAG: ${{ steps.v.outputs.tag }}
           CLOUD: ${{ steps.v.outputs.cloud }}
         run: |
-          prev=$(git tag --list "${CLOUD}-bicep-v[0-9]*" --sort=-v:refname | awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
-          gh release create "$TAG" dist/atomity.json dist/atomity.json.sha256 \
-            dist/atomity-subscription.json dist/atomity-subscription.json.sha256 \
-            "dist/${TAG}-modules.zip" "dist/${TAG}-modules.zip.sha256" \
-            --title "$TAG" --generate-notes ${prev:+--notes-start-tag "$prev"} --verify-tag
+          prev=$(git tag \
+            --list "${CLOUD}-bicep-v[0-9]*" \
+            --sort=-v:refname |
+            awk -v t="$TAG" 'f{print; exit} $0==t{f=1}')
+
+          gh release create "$TAG" \
+            dist/atomity.json \
+            dist/atomity.json.sha256 \
+            dist/atomity-subscription.json \
+            dist/atomity-subscription.json.sha256 \
+            dist/atomity-eventgrid.json \
+            dist/atomity-eventgrid.json.sha256 \
+            "dist/${TAG}-modules.zip" \
+            "dist/${TAG}-modules.zip.sha256" \
+            --title "$TAG" \
+            --generate-notes \
+            ${prev:+--notes-start-tag "$prev"} \
+            --verify-tag
 
   # After a Terraform release is published, open a pull request that adds it to the Cloud
   # Shell script's pins. Merging it and tagging <cloud>-shell-vX.Y.Z ships it to Cloud Shell
