@@ -1,3 +1,4 @@
 # Terraform releases the Cloud Shell script runs. One tag per line.
 # The newest is used by default; the others stay selectable with --module-tag.
+azure-tf-v1.1.0
 azure-tf-v1.0.0
